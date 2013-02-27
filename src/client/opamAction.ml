@@ -498,6 +498,63 @@ let build_and_install_package_aux t ~metadata nv =
     remove_package ~rm_build:false ~metadata:false t nv;
     raise e
 
+let compare_filenames f1 f2 =
+  compare (OpamFilename.to_string f1) (OpamFilename.to_string f2)
+
+(* Recursively list files in the current state prefix directory *)
+let list_switch_root t =
+  let root = OpamPath.Switch.root t.root t.switch in
+  List.fast_sort compare_filenames (OpamFilename.list_files root)
+
+(* Map files to a list of (file, file_mtime) pairs *)
+let map_mtime files =
+  List.map (fun f ->
+      f, (Unix.lstat (OpamFilename.to_string f)).Unix.st_mtime) files
+
+(* Difference of two list of pairs (file, mtime), sorted by [file]
+   @return (removed_files * modified_files * installed_files) *)
+let diff_filetrees l1 l2 =
+  let rec aux rems insts mods r1 r2 = match r1, r2 with
+    | h1 :: t1, h2 :: t2 ->
+      let cmp_mtime = compare (snd h1) (snd h2) in
+      let cmp_filename = compare_filenames (fst h1) (fst h2) in
+      (* A new file has been installed *)
+      if cmp_filename > 0 then aux rems (h2 :: insts) mods r1 t2
+      (* A file has been removed *)
+      else if cmp_filename < 0 then aux (h1 :: rems) insts mods t1 r2
+      (* File has been modified *)
+      else if cmp_mtime < 0 then aux rems insts (h2 :: mods) t1 t2
+      (* File became younger !?! *)
+      else if cmp_mtime > 0 then aux rems insts (h1 :: mods) t1 t2
+      (* No change *)
+      else aux rems insts mods t1 t2
+    (* Leftover files *)
+    | [], [] -> List.rev rems, List.rev insts, List.rev mods
+    | [], r2 -> List.rev rems, List.rev (r2 @ insts), List.rev mods
+    | r1, [] -> List.rev (r1 @ rems), List.rev insts, List.rev mods
+  in
+  aux [] [] [] l1 l2
+
+let archive_package t (removed_files, installed_files, modified_files) =
+    let print_filenames header files =
+      let filenames, _ = List.split files in
+      Printf.printf "\n===== %s =====\n" header;
+      if List.length filenames > 0 then
+        List.iter (fun f -> print_endline (OpamFilename.to_string f)) filenames
+      else
+        print_endline "None"
+    in
+
+    print_filenames "Removed files" removed_files;
+    print_filenames "Installed files" installed_files;
+    print_filenames "Modified files" modified_files
+
 let build_and_install_package t ~metadata nv =
   if not !OpamGlobals.fake then
-    build_and_install_package_aux t ~metadata nv
+    let init_filetree = map_mtime (list_switch_root t) in
+    (* Proceed to build and install *)
+    build_and_install_package_aux t ~metadata nv;
+    (* Create a binary package (archive of installed files) *)
+    let new_filetree = map_mtime (list_switch_root t) in
+    let changes = diff_filetrees init_filetree new_filetree in
+    archive_package t changes
