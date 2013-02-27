@@ -49,6 +49,8 @@ let archives_dir t = t / "archives"
 
 let archive t nv = archives_dir t // (OpamPackage.to_string nv ^ "+opam.tar.gz")
 
+let archive_bin t nv = archives_dir t // (OpamPackage.to_string nv ^ "+opam+bin.tar.gz")
+
 let repo_index t = t / "repo" // "index"
 
 module Switch = struct

@@ -58,6 +58,9 @@ val descr: t -> package -> filename
 (** Archives files: {i $opam/archives/$NAME.$VERSION.tar.gz} *)
 val archive: t -> package -> filename
 
+(** Binary archives files {i $opam/archives/$NAME.$VERSION+checksum.tar.gz} *)
+val archive_bin: t -> package -> filename
+
 (** OPAM files folder: {i $opam/opam/} *)
 val opam_dir: t -> dirname
 

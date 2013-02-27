@@ -329,6 +329,14 @@ module Tar = struct
       | None   -> None
       | Some c -> Some (command c)
 
+  let create_function archive files =
+    let command c dir =
+      command ([ "tar" ; Printf.sprintf "cf%c" c ; archive; "-C" ; dir ]
+        @ files)
+    in
+    (* TODO: handle more extensions *)
+    Some (command 'z')
+
 end
 
 let is_tar_archive = Tar.is_archive
@@ -352,6 +360,13 @@ let extract_in file dst =
     internal_error "%s does not exist." file;
   match Tar.extract_function file with
   | None   -> internal_error "%s is not a valid tar archive." file
+  | Some f -> f dst
+
+let archive filename files dst =
+  (* if Sys.file_exists filename then *)
+  (*  internal_error "%s already exists." filename; *)
+  match Tar.create_function filename files with
+  | None   -> internal_error "%s is not a valid tar archive name." filename
   | Some f -> f dst
 
 let link src dst =

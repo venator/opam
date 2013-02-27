@@ -122,6 +122,10 @@ val extract: string -> string -> unit
     [dirname]. [dirname] should already exists. *)
 val extract_in: string -> string -> unit
 
+(** [archive filename files dirname] create the archive [filename] within the
+[dirname] directory, containing the files listed in [files]. *)
+val archive: string -> string list -> string -> unit
+
 (** Create a directory. Do not fail if the directory already
     exist. *)
 val mkdir: string -> unit

@@ -535,7 +535,7 @@ let diff_filetrees l1 l2 =
   in
   aux [] [] [] l1 l2
 
-let archive_package t (removed_files, installed_files, modified_files) =
+let archive_package t nv (removed_files, installed_files, modified_files) =
     let print_filenames header files =
       let filenames, _ = List.split files in
       Printf.printf "\n===== %s =====\n" header;
@@ -547,7 +547,16 @@ let archive_package t (removed_files, installed_files, modified_files) =
 
     print_filenames "Removed files" removed_files;
     print_filenames "Installed files" installed_files;
-    print_filenames "Modified files" modified_files
+    print_filenames "Modified files" modified_files;
+
+    print_endline "\nCreating binary package...";
+
+    let prefix = OpamPath.Switch.root t.root t.switch in
+    let files = List.map (fun (f, _) ->
+        OpamFilename.remove_prefix ~prefix f) installed_files
+    in
+    OpamSystem.archive (OpamFilename.to_string (OpamPath.archive_bin t.root nv))
+      files (OpamFilename.Dir.to_string prefix)
 
 let build_and_install_package t ~metadata nv =
   if not !OpamGlobals.fake then
@@ -557,4 +566,4 @@ let build_and_install_package t ~metadata nv =
     (* Create a binary package (archive of installed files) *)
     let new_filetree = map_mtime (list_switch_root t) in
     let changes = diff_filetrees init_filetree new_filetree in
-    archive_package t changes
+    archive_package t nv changes
