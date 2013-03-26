@@ -50,7 +50,7 @@ let download_retry =
 let cudf_file = ref (None: string option)
 let aspcud_criteria =
   try OpamMisc.strip (OpamMisc.getenv "OPAMCRITERIA")
-  with _ -> "paranoid"
+  with _ -> "-removed,-notuptodate,-new"
 
 let default_repository_name    = "default"
 let default_repository_address = "http://opam.ocamlpro.com"
@@ -61,7 +61,10 @@ let default_package = "conf-ocaml"
 
 let system = "system"
 
-let switch : string option ref = ref None
+let switch = ref (
+    try Some (OpamMisc.getenv "OPAMSWITCH")
+    with _ -> None
+  )
 
 let opam_version = "1"
 
@@ -146,10 +149,10 @@ let os () =
 let string_of_os = function
   | Darwin    -> "darwin"
   | Linux     -> "linux"
-  | FreeBSD
-  | OpenBSD
-  | NetBSD
-  | DragonFly -> "bsd"
+  | FreeBSD   -> "freebsd"
+  | OpenBSD   -> "openbsd"
+  | NetBSD    -> "netbsd"
+  | DragonFly -> "dragonfly"
   | Cygwin    -> "cygwin"
   | Win32     -> "win32"
   | Unix      -> "unix"

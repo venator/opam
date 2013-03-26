@@ -45,6 +45,9 @@ type state = {
   (** The list of repositories *)
   repositories: OpamFile.Repo_config.t repository_name_map;
 
+  (** The eventual prefix files *)
+  prefixes: OpamFile.Prefix.t repository_name_map;
+
   (** The list of packages *)
   packages: package_set;
 
@@ -109,7 +112,18 @@ val get_opam_env: state -> env
 val add_to_env: state -> env -> (string * string * string) list -> env
 
 (** Print a warning if the environment is not set-up properly. *)
-val print_env_warning: ?add_profile:bool -> state -> unit
+val print_env_warning: state -> user_config option -> unit
+
+(** {2 Initialisation} *)
+
+(** Update the global and user configuration by asking some questions. *)
+val update_setup_interactive: state -> shell -> filename -> unit
+
+(** Display the global and user configuration for OPAM. *)
+val display_setup: state -> shell -> filename -> unit
+
+(** Update the user configuration. *)
+val update_setup: state -> user_config option -> global_config option -> unit
 
 (** {2 Substitutions} *)
 
@@ -150,12 +164,13 @@ val find_repository_name: state -> repository_name -> repository
 val string_of_repositories: OpamFile.Repo_config.t repository_name_map -> string
 
 (** Build a map which says in which repository the latest metadata for
-    a given package is. *)
+    a given package is. This function is *very* costly (need to scan all the
+   files in the repositories, so don't abuse). *)
 val package_repository_map: state -> repository package_map
 
 (** Build a map which says in which repository the latest metadata for
     a given compiler is. *)
-val compiler_repository_map: state -> repository compiler_map
+val compiler_repository_map: state -> (filename * filename option) compiler_map
 
 (** Sort repositories by priority *)
 val sorted_repositories: state -> repository list
@@ -167,6 +182,9 @@ val compilers: root:dirname -> compiler_set
 
 (** Install the given compiler *)
 val install_compiler: state -> quiet:bool -> switch -> compiler -> unit
+
+(** Write the right compiler switch in ~/.opam/config *)
+val update_switch_config: state -> switch -> unit
 
 (** Get the packages associated with the given compiler *)
 val get_compiler_packages: state -> compiler -> atom list
@@ -266,6 +284,7 @@ module Types: sig
     opams: OpamFile.OPAM.t package_map;
     descrs: OpamFile.Descr.t package_map;
     repositories: OpamFile.Repo_config.t repository_name_map;
+    prefixes: OpamFile.Prefix.t repository_name_map;
     packages: package_set;
     available_packages: package_set Lazy.t;
     aliases: OpamFile.Aliases.t;

@@ -265,3 +265,26 @@ let variable v =
   let t = OpamState.load_state "config-variable" in
   let contents = OpamState.contents_of_variable t v in
   OpamGlobals.msg "%s\n" (OpamVariable.string_of_variable_contents contents)
+
+let setup user global =
+  log "config-setup";
+  let t = OpamState.load_state "config-setup" in
+  OpamState.update_setup t user global
+
+let setup_list shell dot_profile =
+  log "config-setup-list";
+  let t = OpamState.load_state "config-setup-list" in
+  OpamState.display_setup t shell dot_profile
+
+let exec command =
+  log "config-exex command=%s" command;
+  let t = OpamState.load_state "config-exec" in
+  let cmd, args =
+    match OpamMisc.split command ' ' with
+    | []        -> OpamSystem.internal_error "Empty command"
+    | h::_ as l -> h, Array.of_list l in
+  let env =
+    let env = OpamState.get_full_env t in
+    let env = List.rev_map (fun (k,v) -> k^"="^v) env in
+    Array.of_list env in
+  Unix.execvpe cmd args env

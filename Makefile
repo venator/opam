@@ -1,6 +1,6 @@
 -include Makefile.config
 
-LOCAL_OCPBUILD=./ocp-build/ocp-build
+LOCAL_OCPBUILD=./ocp-build/ocp-build -no-use-ocamlfind
 OCPBUILD ?= $(LOCAL_OCPBUILD)
 SRC_EXT=src_ext
 TARGETS = opam opam-mk-repo
@@ -20,6 +20,25 @@ byte: $(LOCAL_OCPBUILD)
 opt: $(LOCAL_OCPBUILD)
 	$(OCPBUILD) -asm
 
+OCAMLBUILD_FLAGS=\
+	-Is src/core,src/client,src/repositories,src/solver,src/scripts \
+	-use-ocamlfind -pkgs re.glob,re.pcre,re.perl,ocamlgraph,cmdliner,cudf,dose3 \
+	-classic-display
+with-ocamlbuild: autogen
+	@for i in core repositories solver client; do\
+	  echo Compiling opam-$$i;\
+	  find src/$$i -type f \( -not -name opamMain.ml \) \
+	                       \( -name \*.ml -or -name \*.mly -or -name \*.mll \)\
+	    | xargs -n 1 basename\
+	    | awk -F. "{ print (toupper(substr(\$$1,0,1)) substr(\$$1,2)) }"\
+	    > src/$$i/opam-$$i.mllib &&\
+	  ocamlbuild $(OCAMLBUILD_FLAGS) opam-$$i.cma opam-$$i.cmxa;\
+	done;\
+	ocamlbuild $(OCAMLBUILD_FLAGS) opamMain.native opam_mk_repo.native opam_repo_check.native &&\
+	ln -sf _build/src/client/opamMain.native opam &&\
+	ln -sf _build/src/scripts/opam_mk_repo.native opam-mk-repo &&\
+	ln -sf _build/src/scripts/opam_repo_check.native opam-repo-check
+
 $(LOCAL_OCPBUILD): ocp-build/ocp-build.boot ocp-build/win32_c.c
 	$(MAKE) -C ocp-build
 
@@ -27,22 +46,27 @@ OCAMLFIND_DIR=$(shell ocamlfind printconf destdir)
 prepare: depends.ocp.in
 	sed "s|%{lib}%|$(OCAMLFIND_DIR)|g" depends.ocp.in > depends.ocp
 
-compile: $(LOCAL_OCPBUILD) src/core/opamGitVersion.ml
+autogen: src/core/opamGitVersion.ml src/core/opamScript.ml src/core/opamVersion.ml
+
+compile: $(LOCAL_OCPBUILD) autogen
 	$(OCPBUILD) -init -scan -sanitize $(TARGET)
 
-clone:
+clone: src/core/opamVersion.ml
 	$(MAKE) -C $(SRC_EXT)
 
 clean:
 	rm -rf _obuild
 	rm -f *.annot src/*.annot
 	rm -f ocp-build.*
+	rm -rf _build
 	$(MAKE) -C $(SRC_EXT) clean
 	$(MAKE) -C ocp-build clean
+	rm -f $(OPAM_FULL_TARGZ)
 
 distclean: clean
 	$(MAKE) -C $(SRC_EXT) distclean
-	rm -f META Makefile.config src/core/opamVersion.ml config.log config.status
+	rm -f META Makefile.config config.log config.status
+	rm -f src/core/opamVersion.ml src/core/opamGitVersion.ml src/core/opamScript.ml
 
 .PHONY: tests
 
@@ -64,25 +88,37 @@ tests-git:
 	  cp _obuild/$*/$*.byte $(DESTDIR)$(prefix)/bin/$*; \
 	fi
 
+%-install-with-ocamlbuild:
+	@if [ -e $* ]; then\
+	  echo "install $*" && cp $* $(DESTDIR)$(prefix)/bin/$*;\
+	fi
+
 META: META.in
 	sed 's/@VERSION@/$(version)/g' < $< > $@
 
-ISGIT = $(shell git status &> /dev/null && if [ $$? -eq 0 ]; then echo "1"; else echo "0"; fi)
+src/core/opamVersion.ml:
+	@echo
+	@echo "    ERROR: you need to run ./configure."
+	@echo
+	@exit 1
 
-ifeq ($(ISGIT), 1)
-src/core/opamGitVersion.ml: .git/logs/HEAD
-	@echo 'let version = Some "$(shell git describe)"' > $@
-else
-src/core/opamGitVersion.ml:
-	@echo "let version = None" > $@
-endif
+src/core/opamGitVersion.ml: src/core/opamVersion.ml
+	./shell/get-git-id.sh > $@
 
-.PHONY: uninstall install
+src/core/opamScript.ml: shell/ src/core/opamVersion.ml
+	ocaml shell/crunch.ml "complete"     < shell/opam_completion.sh > $@
+	ocaml shell/crunch.ml "complete_zsh" < shell/opam_completion_zsh.sh >> $@
+	ocaml shell/crunch.ml "switch_eval"  < shell/opam_switch_eval.sh >> $@
+
+.PHONY: uninstall install install-with-ocamlbuild
 install:
 	mkdir -p $(DESTDIR)$(prefix)/bin
 	$(MAKE) $(TARGETS:%=%-install)
 	mkdir -p $(DESTDIR)$(mandir)/man1 && cp doc/man/* $(DESTDIR)$(mandir)/man1
-
+install-with-ocamlbuild:
+	mkdir -p $(DESTDIR)$(prefix)/bin
+	$(MAKE) $(TARGETS:%=%-install-with-ocamlbuild)
+	mkdir -p $(DESTDIR)$(mandir)/man1 && cp doc/man/* $(DESTDIR)$(mandir)/man1
 uninstall:
 	rm -f $(prefix)/bin/opam*
 	rm -f $(mandir)/man1/opam*
@@ -92,7 +128,7 @@ REPO_LIB   = opam-repositories
 SOLVER_LIB = opam-solver
 CLIENT_LIB = opam-client
 
-CORE_NOMLI = opamGlobals.ml
+CORE_NOMLI = opamGlobals.ml opamParser.ml opamLexer.ml opamLineLexer.ml
 CORE_MLI   = $(foreach i, $(shell find src/core -name "*.mli"), $(notdir $i))
 REPO_MLI   = $(foreach i, $(shell find src/repositories -name "*.mli"), $(notdir $i))
 SOLVER_MLI = $(foreach i, $(shell find src/solver -name "*.mli"), $(notdir $i))
@@ -112,9 +148,17 @@ FILES = $(CORE_FILES:%=_obuild/opam-core/%)\
 	$(SOLVER_FILES:%=_obuild/opam-solver/%)\
 	$(CLIENT_FILES:%=_obuild/opam-client/%)
 
-.PHONY: libuninstall libinstall
+OCAMLBUILD_FILES =\
+	$(CORE_FILES:%=_build/src/core/%)\
+	$(REPO_FILES:%=_build/src/repositories/%)\
+	$(SOLVER_FILES:%=_build/src/solver/%)\
+	$(CLIENT_FILES:%=_build/src/client/%)
+
+.PHONY: libuninstall libinstall libinstall-with-ocamlbuild
 libinstall: META
 	ocamlfind install opam META $(FILES)
+libinstall-with-ocamlbuild: META
+	ocamlfind install opam META $(OCAMLBUILD_FILES)
 libuninstall:
 	ocamlfind remove opam
 
@@ -129,31 +173,39 @@ doc: compile
 	  src/**/*.mli -html -d doc/html/
 	$(MAKE) -C doc
 
-trailing:
-	find src -name "*.ml*" -exec \
-	  sed -i xxx -e :a -e "/^\n*$$/{$$d;N;ba" -e '}' {} \;
-	find src -name "*xxx" -exec rm {} \;
+OPAM_FULL       = opam-full-$(version)
+OPAM_FULL_TARGZ = $(OPAM_FULL).tar.gz
 
-OPAM_FULL  = opam-full-$(version)
 OPAM_FILES = $(wildcard src_ext/*.tar.gz)\
 	     $(wildcard src_ext/*.tbz)\
 	     $(shell git ls-tree --name-only -r HEAD)
 
-archive:
+prepare-archive:
 	$(MAKE) -C src_ext distclean
 	$(MAKE) clone
 	rm -f $(OPAM_FULL) $(OPAM_FULL).tar.gz
 	ln -s . $(OPAM_FULL)
+
+# we want OPAM_FILES to be up-to-date here
+complete-archive:
 	tar cz $(addprefix $(OPAM_FULL)/,$(OPAM_FILES)) > $(OPAM_FULL).tar.gz
 	rm -f $(OPAM_FULL)
 
-upload: archive
-	read -p "Upload $(OPAM_FULL_TARGZ) [Y/n]?" choice;\
-	case x"$$choice" in \
-	  x|xy|xY ) scp $(OPAM_FULL).tar.gz webmaster@ocamlpro.com:pub/;;\
-	  * ) echo "Cancelled.";;\
-	esac
+$(OPAM_FULL_TARGZ):
+	$(MAKE) prepare-archive
+	$(MAKE) complete-archive
+
+archive: $(OPAM_FULL_TARGZ)
+	@
+upload: $(OPAM_FULL_TARGZ)
+	scp $(OPAM_FULL_TARGZ) webmaster@ocamlpro.com:pub/
 
 configure: configure.ac m4/*.m4
 	aclocal -I m4
 	autoconf
+
+release:
+	git tag -d latest || true
+	git tag -a latest -m "Latest release"
+	git tag -a $(version) -m "Release $(version)"
+	$(MAKE) upload

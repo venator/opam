@@ -1,3 +1,37 @@
+1.0.1 [Mar 2013]
+* Display OS and OPAM version on internal errors to ease error reporting
+* Fix `opam reinstall` when reinstalling a package wich is a dependency of installed packages (regression introduced in 0.9.5)
+* Export and read `OPAMSWITCH` to be able to call OPAM in different switches
+* `opam-client` can now be used in a toplevel
+* `-n` now means `--no-setup` and not `--no-checksums` anymore
+* Fix stupid typo in detection of FreeBSD archs
+* Fix installation of local compilers with local paths endings with `.../ocaml/`
+
+1.0.0 [Mar 2013]
+* Improve the lexer performance (thx to @oandrieu)
+* Fix various typos (thx to @chaudhuri)
+* Fix build issue (thx to @avsm)
+
+0.9.6 [Mar 2013]
+* Fix installation of pinned packages on BSD (thx to @smondet)
+* Fix configuration for zsh users (thx to @AltGr)
+* Fix loading of `~/.profile` when using dash (eg. in Debian/Ubuntu)
+* Fix installation of packages with symbolic links (regression introduced in 0.9.5)
+
+0.9.5 [Mar 2013]
+* If necessary, apply patches and substitute files before removing a package
+* Fix `opam remove <pkg> --keep-build-dir` keeps the folder if a source archive is extracted
+* Add build and install rules using ocamlbuild to help distro packagers
+* Support arbitrary level of nested subdirectories in packages repositories
+* Add `opam config exec "CMD ARG1 ... ARGn" --switch=SWITCH` to execute a command in a subshell
+* Improve the behaviour of `opam update` wrt. pinned packages
+* Change the default external solver criteria (only useful if you have aspcud installed on your machine)
+* Add support for global and user configuration for OPAM (`opam config setup`)
+* Stop yelling when OPAM is not up-to-date
+* Update or generate `~/.ocamlinit` when running `opam init`
+* Fix tests on *BSD (thx Arnaud Degroote)
+* Fix compilation for the source archive
+
 0.9.4 [Feb 2013]
 * Disable auto-removal of unused dependencies. This can now be enabled on-demand using `-a`
 * Fix compilation and basic usage on Cygwin

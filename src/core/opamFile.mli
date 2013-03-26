@@ -250,7 +250,7 @@ module Comp: sig
 
   (** Options to give to build the package. If this one is provided,
       nothing should be specified for [configure] and [make]. *)
-  val build: t -> string list list
+  val build: t -> command list
 
   (** Packages to install immediately after the creation of OCaml *)
   val packages: t -> formula
@@ -418,6 +418,9 @@ module Urls_txt: IO_FILE with type t = file_attribute_set
 
 (** List of filenames *)
 module Filenames: IO_FILE with type t = filename_set
+
+(** Prefix of package directories *)
+module Prefix: IO_FILE with type t = string name_map
 
 (** Display statistics about file access. *)
 val print_stats: unit -> unit

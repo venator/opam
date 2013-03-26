@@ -134,6 +134,19 @@ type ppflag =
   | Camlp4 of string list
   | Cmd of string list
 
+type shell = [`csh|`zsh|`sh|`bash]
+
+type global_config = {
+  complete   : bool;
+  switch_eval: bool;
+}
+
+type user_config = {
+  shell      : shell;
+  ocamlinit  : bool;
+  dot_profile: filename option;
+}
+
 (* Command line arguments *)
 
 (* Upload arguments *)

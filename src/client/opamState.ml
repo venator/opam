@@ -38,6 +38,17 @@ let confirm fmt =
       true
   ) fmt
 
+let read fmt =
+  Printf.ksprintf (fun msg ->
+    OpamGlobals.msg "%s %!" msg;
+    if not !OpamGlobals.yes then
+      match read_line () with
+      | "" -> None
+      | s  -> Some s
+    else
+      None
+  ) fmt
+
 let update_hook = ref (fun ~save_cache _ -> let _ = save_cache in assert false)
 let switch_reinstall_hook = ref (fun _ -> assert false)
 
@@ -50,6 +61,7 @@ type state = {
   opams: OpamFile.OPAM.t package_map;
   descrs: OpamFile.Descr.t package_map;
   repositories: OpamFile.Repo_config.t repository_name_map;
+  prefixes: OpamFile.Prefix.t repository_name_map;
   packages: package_set;
   available_packages: package_set Lazy.t;
   aliases: OpamFile.Aliases.t;
@@ -88,7 +100,8 @@ let print_state t =
   log "REINSTALL : %s" (OpamPackage.Set.to_string t.reinstall)
 
 let compilers ~root =
-  OpamCompiler.list (OpamPath.compilers_dir root)
+  let compilers = OpamCompiler.list (OpamPath.compilers_dir root) in
+  OpamCompiler.Set.of_list (OpamCompiler.Map.keys compilers)
 
 let opam t nv =
   try OpamPackage.Map.find nv t.opams
@@ -131,7 +144,7 @@ let mem_repository_name t name =
 let find_repository_name t name =
   OpamRepositoryName.Map.find name t.repositories
 
-let find_repository_aux repositories root repo_index nv =
+let find_repository_aux prefixes repositories root repo_index nv =
   log "find_repository %s" (OpamPackage.to_string nv);
   let name = OpamPackage.name nv in
   let rec aux = function
@@ -140,7 +153,9 @@ let find_repository_aux repositories root repo_index nv =
       if OpamRepositoryName.Map.mem r repositories then (
         let repo = OpamRepositoryName.Map.find r repositories in
         let repo_p = OpamPath.Repository.create root r in
-        let opam_f = OpamPath.Repository.opam repo_p nv in
+        let prefix = OpamRepositoryName.Map.find r prefixes in
+        let prefix = OpamRepository.find_prefix prefix nv in
+        let opam_f = OpamPath.Repository.opam repo_p prefix nv in
         if OpamFilename.exists opam_f then (
           Some (repo_p, repo)
         ) else
@@ -153,7 +168,7 @@ let find_repository_aux repositories root repo_index nv =
     None
 
 let find_repository t nv =
-  find_repository_aux t.repositories t.root t.repo_index nv
+  find_repository_aux t.prefixes t.repositories t.root t.repo_index nv
 
 let mem_repository t nv =
   find_repository t nv <> None
@@ -167,12 +182,22 @@ let with_repository t nv fn =
   | Some (repo_p, repo) -> fn repo_p repo
 
 let package_repository_map t =
+  let package_maps = ref [] in
+  let get_packages repo =
+    if List.mem_assq repo !package_maps then
+      List.assoc repo !package_maps
+    else (
+      let repo_p = OpamPath.Repository.create t.root repo.repo_name in
+      let _, packages = OpamRepository.packages repo_p in
+      package_maps := (repo, packages) :: !package_maps;
+      packages
+    ) in
   OpamPackage.Name.Map.fold (fun n repo_s map ->
     let all_versions = ref OpamPackage.Version.Set.empty in
     List.fold_left (fun map r ->
       let repo = find_repository_name t r in
-      let repo_p = OpamPath.Repository.create t.root repo.repo_name in
-      let available_versions = OpamRepository.versions repo_p n in
+      let packages = get_packages repo in
+      let available_versions = OpamPackage.versions_of_name packages n in
       OpamPackage.Version.Set.fold (fun v map ->
         if not (OpamPackage.Version.Set.mem v !all_versions) then (
           all_versions := OpamPackage.Version.Set.add v !all_versions;
@@ -193,11 +218,11 @@ let compiler_repository_map t =
   List.fold_left (fun map repo ->
     let repo_p = OpamPath.Repository.create t.root repo.repo_name in
     let comps = OpamRepository.compilers repo_p in
-    OpamCompiler.Set.fold (fun c map ->
-      if OpamCompiler.Map.mem c map then
+    OpamCompiler.Map.fold (fun comp files map ->
+      if OpamCompiler.Map.mem comp map then
         map
       else
-        OpamCompiler.Map.add c repo map
+        OpamCompiler.Map.add comp files map
     ) comps map
   ) OpamCompiler.Map.empty (sorted_repositories t)
 
@@ -231,13 +256,15 @@ let pinned_path t name =
     None
 
 (* List the packages which does fullfil the compiler constraints *)
-let available_packages root system opams installed repositories repo_index compiler_version pinned packages =
+let available_packages
+    root system opams installed prefixes repositories
+    repo_index compiler_version pinned packages =
   let filter nv =
     if OpamPackage.Map.mem nv opams then (
       let opam = OpamPackage.Map.find nv opams in
       let available () =
         OpamPackage.Set.mem nv installed
-        || find_repository_aux repositories root repo_index nv <> None in
+        || find_repository_aux prefixes repositories root repo_index nv <> None in
       let consistent_ocaml_version () =
         let atom (r,v) =
           match OpamCompiler.Version.to_string v with
@@ -315,6 +342,15 @@ let system_needs_upgrade t =
     false
   | Some v -> t.compiler_version <> v
 
+let make_repository_name_map fn root config =
+  List.fold_left
+    (fun map repo ->
+      let repo_p = OpamPath.Repository.create root repo in
+      OpamRepositoryName.Map.add repo (fn repo_p) map)
+    OpamRepositoryName.Map.empty
+    (OpamFile.Config.repositories config)
+
+
 (* Only used during init: load only repository-related information *)
 let load_repository_state call_site =
   log "LOAD-REPO-STATE(%s)" call_site;
@@ -322,11 +358,11 @@ let load_repository_state call_site =
   let config_p = OpamPath.config root in
   let config = OpamFile.Config.read config_p in
   let repositories =
-    List.fold_left (fun map repo ->
-      let repo_p = OpamPath.Repository.create root repo in
-      let config = OpamFile.Repo_config.read (OpamPath.Repository.config repo_p) in
-      OpamRepositoryName.Map.add repo config map
-    ) OpamRepositoryName.Map.empty (OpamFile.Config.repositories config) in
+    let fn repo_p = OpamFile.Repo_config.read (OpamPath.Repository.config repo_p) in
+    make_repository_name_map fn root config in
+  let prefixes =
+    let fn repo_p = OpamRepository.read_prefix repo_p in
+    make_repository_name_map fn root config in
   let switch = match !OpamGlobals.switch with
     | None   -> OpamFile.Config.switch config
     | Some a -> OpamSwitch.of_string a in
@@ -348,7 +384,7 @@ let load_repository_state call_site =
   {
     partial; root; switch; compiler; compiler_version; repositories; opams; descrs;
     packages; available_packages; installed; installed_roots; reinstall;
-    repo_index; config; aliases; pinned;
+    repo_index; config; aliases; pinned; prefixes;
   }
 
 (* load partial state to be able to read env variables *)
@@ -371,6 +407,7 @@ let load_env_state call_site =
 
   (* evertything else is empty *)
   let repositories = OpamRepositoryName.Map.empty in
+  let prefixes = OpamRepositoryName.Map.empty in
   let compiler_version = OpamCompiler.Version.of_string "none" in
   let opams = OpamPackage.Map.empty in
   let descrs = OpamPackage.Map.empty in
@@ -384,32 +421,8 @@ let load_env_state call_site =
   {
     partial; root; switch; compiler; compiler_version; repositories; opams; descrs;
     packages; available_packages; installed; installed_roots; reinstall;
-    repo_index; config; aliases; pinned;
+    repo_index; config; aliases; pinned; prefixes;
   }
-
-let check_opam_version t =
-  let n = OpamPackage.Name.of_string "opam-lib" in
-  match find_packages_by_name t n with
-  | None   -> ()
-  | Some _ ->
-    try
-      let max_version =
-        let versions = OpamPackage.versions_of_name (Lazy.force t.available_packages) n in
-        let max_version = OpamPackage.Version.Set.max_elt versions in
-        OpamVersion.of_string (OpamPackage.Version.to_string max_version) in
-      if OpamVersion.compare max_version OpamVersion.current > 0 then (
-        OpamGlobals.msg "Your version of OPAM is not up-to-date!\n\
-                        \        opam-path: %s\n\
-                        \  current-version: %s\n\
-                        \   latest-version: %s\n\
-                         It is *highly* recommended to install the latest version of OPAM.\n"
-          (try List.hd (OpamSystem.read_command_output ~verbose:false ["which"; "opam"]) with _ -> "...")
-          (OpamVersion.to_string OpamVersion.current)
-          (OpamVersion.to_string max_version);
-        OpamGlobals.exit 42
-      )
-    with _ ->
-      ()
 
 let get_compiler_packages t comp =
   let comp = compiler t comp in
@@ -472,7 +485,6 @@ let clean dir name =
   )
 
 let global_consistency_checks t =
-  check_opam_version t;
   let clean_repo repo_root nv =
     let tmp_dir = OpamPath.Repository.tmp_dir repo_root nv in
     clean tmp_dir (OpamPackage.to_string nv) in
@@ -481,7 +493,7 @@ let global_consistency_checks t =
     let repo_root = OpamPath.Repository.create t.root repo in
     let tmp_dir = OpamPath.Repository.tmp repo_root in
     let available =
-      let dirs = OpamFilename.list_dirs tmp_dir in
+      let dirs = OpamFilename.sub_dirs tmp_dir in
       let pkgs = OpamMisc.filter_map OpamPackage.of_dirname dirs in
       OpamPackage.Set.of_list pkgs in
     let not_installed = OpamPackage.Set.diff available all_installed in
@@ -489,15 +501,14 @@ let global_consistency_checks t =
   ) t.repositories
 
 let switch_consistency_checks t =
-  check_opam_version t;
   let pin_cache = OpamPath.Switch.pinned_cache t.root t.switch in
   let clean_pin name =
     let name = OpamPackage.Name.to_string name in
     let pin_dir = pin_cache / name in
     clean pin_dir name in
   let available =
-      let dirs = OpamFilename.list_dirs pin_cache in
-      let pkgs = List.map (
+      let dirs = OpamFilename.rec_dirs pin_cache in
+      let pkgs = List.rev_map (
           OpamFilename.basename_dir
           |> OpamFilename.Base.to_string
           |> OpamPackage.Name.of_string
@@ -514,13 +525,27 @@ let print_stats () =
 
 type cache = OpamFile.OPAM.t package_map * OpamFile.Descr.t package_map
 
+let check_marshaled_file file =
+  let ic = open_in_bin (OpamFilename.to_string file) in
+  let header = String.create Marshal.header_size in
+  really_input ic header 0 Marshal.header_size;
+  let expected_size = Marshal.total_size header 0 in
+  let current_size = in_channel_length ic in
+  close_in ic;
+  if not (expected_size = current_size) then (
+    OpamGlobals.error "The local-state cache is corrupted, removing it.";
+    OpamSystem.internal_error "Corrupted cache";
+  )
+
 let marshal_from_file file =
   try
+    check_marshaled_file file;
     let ic = open_in_bin (OpamFilename.to_string file) in
     let (opams, descrs: cache) = Marshal.from_channel ic in
     close_in ic;
     Some opams, Some descrs
   with _ ->
+    OpamFilename.remove file;
     None, None
 
 let save_state ~update t =
@@ -529,14 +554,19 @@ let save_state ~update t =
   if update then (
     OpamGlobals.msg
       "Updating the cache of metadata (%s).\n"
-      (OpamFilename.to_string file);
+      (OpamFilename.prettify file);
   ) else
     OpamGlobals.msg
       "Creating a cache of metadata in %s.\n"
-      (OpamFilename.to_string file);
+      (OpamFilename.prettify file);
   let oc = open_out_bin (OpamFilename.to_string file) in
   Marshal.to_channel oc (t.opams, t.descrs) [];
   close_out oc
+
+let remove_state_cache () =
+  let root = OpamPath.default () in
+  let file = OpamPath.state_cache root in
+  OpamFilename.remove file
 
 let reinstall_system_compiler t =
   let continue =
@@ -558,11 +588,23 @@ let reinstall_system_compiler t =
   ) else
     OpamGlobals.exit 1
 
-
 let load_state ?(save_cache=true) call_site =
   log "LOAD-STATE(%s)" call_site;
   let t0 = Unix.gettimeofday () in
   let root = OpamPath.default () in
+
+  let config_p = OpamPath.config root in
+  let config =
+    let config = OpamFile.Config.read config_p in
+    if OpamFile.Config.opam_version config <> OpamVersion.current then (
+      (* opam has been updated, so refresh the configuration file and clean-up the cache. *)
+      let config = OpamFile.Config.with_current_opam_version config in
+      OpamFile.Config.write config_p config;
+      remove_state_cache ();
+      config
+    ) else
+      config in
+
   let opams, descrs =
     let file = OpamPath.state_cache root in
     if OpamFilename.exists file then
@@ -571,19 +613,6 @@ let load_state ?(save_cache=true) call_site =
       None, None in
   let cached = opams <> None in
   let partial = false in
-
-  log "load_state root=%s cached=%b" (OpamFilename.Dir.to_string root) cached;
-
-  let config_p = OpamPath.config root in
-  let config =
-    let config = OpamFile.Config.read config_p in
-    if OpamFile.Config.opam_version config <> OpamVersion.current then
-      (* opam has been updated, so refresh the configuration file *)
-      let config = OpamFile.Config.with_current_opam_version config in
-      OpamFile.Config.write config_p config;
-      config
-    else
-      config in
 
   let switch = match !OpamGlobals.switch with
     | None   -> OpamFile.Config.switch config
@@ -595,18 +624,21 @@ let load_state ?(save_cache=true) call_site =
       log "%S does not contain the compiler name associated to the switch %s"
         (OpamFilename.to_string (OpamPath.aliases root))
         (OpamSwitch.to_string switch);
-      if OpamSwitch.Map.cardinal aliases > 0 then (
-        let new_switch, new_compiler = OpamSwitch.Map.choose aliases in
-        OpamGlobals.error "The current switch (%s) is an unknown compiler switch. Switching back to %s ..."
-          (OpamSwitch.to_string switch)
-          (OpamSwitch.to_string new_switch);
-        let config = OpamFile.Config.with_switch config new_switch in
-        OpamFile.Config.write config_p config;
-        new_switch, new_compiler;
-      ) else
-        OpamGlobals.error_and_exit
-          "The current switch (%s) is an unknown compiler switch."
-          (OpamSwitch.to_string switch) in
+      match !OpamGlobals.switch with
+      | Some s -> OpamSwitch.not_installed (OpamSwitch.of_string s)
+      | None   ->
+        if OpamSwitch.Map.cardinal aliases > 0 then (
+          let new_switch, new_compiler = OpamSwitch.Map.choose aliases in
+          OpamGlobals.error "The current switch (%s) is an unknown compiler switch. Switching back to %s ..."
+            (OpamSwitch.to_string switch)
+            (OpamSwitch.to_string new_switch);
+          let config = OpamFile.Config.with_switch config new_switch in
+          OpamFile.Config.write config_p config;
+          new_switch, new_compiler;
+        ) else
+          OpamGlobals.error_and_exit
+            "The current switch (%s) is an unknown compiler switch."
+            (OpamSwitch.to_string switch) in
 
   let compiler_version =
     let comp_f = OpamPath.compiler root compiler in
@@ -628,11 +660,11 @@ let load_state ?(save_cache=true) call_site =
     | None   -> package_files (fun root nv -> OpamFile.Descr.safe_read (OpamPath.descr root nv))
     | Some d -> d in
   let repositories =
-    List.fold_left (fun map repo ->
-      let repo_p = OpamPath.Repository.create root repo in
-      let config = OpamFile.Repo_config.read (OpamPath.Repository.config repo_p) in
-      OpamRepositoryName.Map.add repo config map
-    ) OpamRepositoryName.Map.empty (OpamFile.Config.repositories config) in
+    let fn repo_p = OpamFile.Repo_config.read (OpamPath.Repository.config repo_p) in
+    make_repository_name_map fn root config in
+  let prefixes =
+    let fn repo_p = OpamRepository.read_prefix repo_p in
+    make_repository_name_map fn root config in
   let repo_index = OpamFile.Repo_index.safe_read (OpamPath.repo_index root) in
   let pinned = OpamFile.Pinned.safe_read (OpamPath.Switch.pinned root switch) in
   let installed = OpamFile.Installed.safe_read (OpamPath.Switch.installed root switch) in
@@ -641,11 +673,15 @@ let load_state ?(save_cache=true) call_site =
   let packages = OpamPackage.Set.of_list (OpamPackage.Map.keys opams) in
   let system = (compiler = OpamCompiler.system) in
   let available_packages =
-    lazy (available_packages root system opams installed repositories repo_index compiler_version pinned packages) in
+    lazy (
+      available_packages
+        root system opams installed prefixes repositories
+        repo_index compiler_version pinned packages
+    ) in
   let t = {
     partial; root; switch; compiler; compiler_version; repositories; opams; descrs;
     packages; available_packages; installed; installed_roots; reinstall;
-    repo_index; config; aliases; pinned;
+    repo_index; config; aliases; pinned; prefixes;
   } in
   print_state t;
   if save_cache && not cached then
@@ -659,15 +695,33 @@ let load_state ?(save_cache=true) call_site =
   ) else
     t
 
-let remove_state_cache () =
-  let root = OpamPath.default () in
-  let file = OpamPath.state_cache root in
-  OpamFilename.remove file
-
 let rebuild_state_cache () =
   remove_state_cache ();
   let t = load_state ~save_cache:false "rebuild-cache" in
   save_state ~update:true t
+
+let switch_eval_sh = "switch_eval.sh"
+let complete_sh    = "complete.sh"
+let complete_zsh   = "complete.zsh"
+let variables_sh   = "variables.sh"
+let variables_csh  = "variables.csh"
+let init_sh        = "init.sh"
+let init_zsh       = "init.zsh"
+let init_csh       = "init.csh"
+let init_file = function
+  | `sh   -> init_sh
+  | `csh  -> init_csh
+  | `zsh  -> init_zsh
+  | `bash -> init_sh
+
+let source t ?(interactive_only=false) f =
+  let file f = OpamFilename.to_string (OpamPath.init t.root // f) in
+  let s =
+    Printf.sprintf ". %s > /dev/null 2> /dev/null || true\n" (file f)
+  in
+  if interactive_only then
+    Printf.sprintf "if tty -s >/dev/null 2>&1; then\n  %sfi\n" s
+  else s
 
 (* Return the contents of a fully qualified variable *)
 let contents_of_variable t v =
@@ -725,9 +779,9 @@ let contents_of_variable t v =
       let names = OpamMisc.split name_str '+' in
       if List.length names = 1 then
         OpamGlobals.error_and_exit "Package %s is not installed" name_str;
-      let names = List.map OpamPackage.Name.of_string names in
+      let names = List.rev_map OpamPackage.Name.of_string names in
       let results =
-        List.map (fun name ->
+        List.rev_map (fun name ->
           match process_one name with
           | None   -> OpamGlobals.error_and_exit "Package %s is not installed" (OpamPackage.Name.to_string name)
           | Some r -> r
@@ -817,7 +871,7 @@ let filter_commands t l =
   OpamMisc.filter_map (filter_command t) l
 
 let expand_env t (env: env_updates) : env =
-  List.map (fun (ident, symbol, string) ->
+  List.rev_map (fun (ident, symbol, string) ->
     let string = substitute_string t string in
     let read_env () =
       let prefix = OpamFilename.Dir.to_string t.root in
@@ -846,13 +900,17 @@ let env_updates t =
   let man_path =
     "MANPATH", ":=", OpamFilename.Dir.to_string (OpamPath.Switch.man_dir t.root t.switch) in
   let comp_env = OpamFile.Comp.env comp in
+  let switch =
+    match !OpamGlobals.switch with
+    | None   -> []
+    | Some s -> [ "OPAMSWITCH", "=", s ] in
   let root =
     if !OpamGlobals.root_dir <> OpamGlobals.default_opam_dir then
       [ "OPAMROOT", "=", !OpamGlobals.root_dir ]
     else
       [] in
 
-  new_path :: man_path :: toplevel_dir :: (root @ comp_env)
+  new_path :: man_path :: toplevel_dir :: (switch @ root @ comp_env)
 
 let get_opam_env t =
   add_to_env t [] (env_updates t)
@@ -861,7 +919,310 @@ let get_full_env t =
   let env0 = OpamMisc.env () in
   add_to_env t env0 (env_updates t)
 
-let print_env_warning ?(add_profile = false) t =
+let mem_pattern_in_string ~pattern ~string =
+  let pattern = Re.compile (Re.str pattern) in
+  Re.execp pattern string
+
+let ocamlinit () =
+  try
+    let file = Filename.concat (OpamMisc.getenv "HOME") ".ocamlinit" in
+    Some (OpamFilename.of_string file)
+  with _ ->
+    None
+
+let ocamlinit_needs_update () =
+  match ocamlinit () with
+  | None      -> true
+  | Some file ->
+    if OpamFilename.exists file then (
+      let body = OpamFilename.read file in
+      let pattern = "OCAML_TOPLEVEL_PATH" in
+      not (mem_pattern_in_string ~pattern ~string:body)
+    ) else
+      true
+
+let update_ocamlinit () =
+  if ocamlinit_needs_update () then (
+    match ocamlinit () with
+    | None      -> ()
+    | Some file ->
+      let body =
+        if not (OpamFilename.exists file) then ""
+        else OpamFilename.read file in
+      if body = "" then
+        OpamGlobals.msg "  Generating ~/.ocamlinit.\n"
+      else
+        OpamGlobals.msg "  Updating ~/.ocamlinit.\n";
+      try
+        let header =
+          "(* Added by OPAM. *)\n\
+           let () =\n\
+          \  try Topdirs.dir_directory (Sys.getenv \"OCAML_TOPLEVEL_PATH\")\n\
+          \  with Not_found -> ()\n\
+           ;;\n\n" in
+        let oc = open_out_bin (OpamFilename.to_string file) in
+        output_string oc (header ^ body);
+        close_out oc;
+      with _ ->
+        OpamSystem.internal_error "Cannot write ~/.ocamlinit."
+  ) else
+    OpamGlobals.msg "  ~/.ocamlinit is already up-to-date.\n"
+
+let string_of_env_update t shell updates =
+  let sh  (k,v) = Printf.sprintf "%s=%s; export %s;\n" k v k in
+  let csh (k,v) = Printf.sprintf "setenv %s %S;\n" k v in
+  let export = match shell with
+    | `zsh
+    | `sh  -> sh
+    | `csh -> csh in
+  let aux (ident, symbol, string) =
+    let string = substitute_string t string in
+    let key, value = match symbol with
+      | "="  -> (ident, string)
+      | "+="
+      | ":=" -> (ident, Printf.sprintf "%s:$%s" string ident)
+      | "=:"
+      | "=+" -> (ident, Printf.sprintf "$%s:%s" ident string)
+      | _    -> failwith (Printf.sprintf "%s is not a valid env symbol" symbol) in
+    export (key, value) in
+  String.concat "" (List.rev_map aux updates)
+
+let init_script t ~switch_eval ~complete (variables_sh, switch_eval_sh, complete_sh)=
+  let variables =
+    Some (source t variables_sh) in
+  let switch_eval =
+    if switch_eval then
+      Some (source t ~interactive_only:true switch_eval_sh)
+    else
+      None in
+  let complete =
+    if complete then
+      Some (source t ~interactive_only:true complete_sh)
+    else
+      None in
+  let buf = Buffer.create 128 in
+  let append name = function
+    | None   -> ()
+    | Some c ->
+      Printf.bprintf buf "# %s\n%s\n" name c in
+  append "Load the environment variables" variables;
+  append "Load the auto-complete scripts" complete;
+  append "Load the opam-switch-eval script" switch_eval;
+  Buffer.contents buf
+
+let update_init_scripts t ~global =
+  let init_scripts =
+    match global with
+    | None   -> []
+    | Some g ->
+      let scripts = [
+        init_sh , (variables_sh , switch_eval_sh, complete_sh);
+        init_zsh, (variables_sh , switch_eval_sh, complete_zsh);
+        init_csh, (variables_csh, switch_eval_sh, complete_sh);
+      ] in
+      let aux (init, scripts) =
+        init,
+        init_script t ~switch_eval:g.switch_eval ~complete:g.complete scripts in
+      List.map aux scripts in
+  let scripts = [
+    (complete_sh   , OpamScript.complete);
+    (complete_zsh  , OpamScript.complete_zsh);
+    (switch_eval_sh, OpamScript.switch_eval);
+    (variables_sh  , string_of_env_update t `sh  (env_updates t));
+    (variables_csh , string_of_env_update t `csh (env_updates t));
+  ] @
+      init_scripts
+  in
+  let overwrite = [
+    init_sh;
+    init_csh;
+    init_zsh;
+    variables_sh;
+    variables_csh;
+  ] in
+  let updated = ref false in
+  let write (name, body) =
+    let file = OpamPath.init t.root // name in
+    let needs_update =
+      if OpamFilename.exists file
+      && List.mem name overwrite then
+        let current = OpamFilename.read file in
+        body <> current
+      else
+        not (OpamFilename.exists file) in
+    if needs_update then (
+      updated := true;
+      try OpamFilename.write file body
+      with _ -> ()
+    ) in
+  List.iter write scripts;
+  match global with
+  | None   -> ()
+  | Some o ->
+    List.iter
+      (fun init_file ->
+        let pretty_init_file = OpamFilename.prettify (OpamPath.init t.root // init_file) in
+        if !updated then
+          OpamGlobals.msg
+            "  Updating %s\n    auto-completion : [%b]\n    opam-switch-eval: [%b]\n"
+            pretty_init_file
+            o.complete
+            o.switch_eval
+        else
+          OpamGlobals.msg "  %s is already up-to-date.\n" pretty_init_file)
+      [ init_sh; init_zsh; init_csh ]
+
+let status_of_init_file t init_sh =
+  let init_sh = OpamPath.init t.root // init_sh in
+  if OpamFilename.exists init_sh then (
+    let string = OpamFilename.read init_sh in
+    let aux pattern = mem_pattern_in_string ~pattern ~string in
+    if OpamFilename.exists init_sh then
+      let complete_sh = aux complete_sh in
+      let complete_zsh = aux complete_zsh in
+      let switch_eval_sh = aux switch_eval_sh in
+      Some (complete_sh, complete_zsh, switch_eval_sh)
+    else
+      None
+  ) else
+    None
+
+let dot_profile_needs_update t dot_profile =
+  if OpamFilename.exists dot_profile then (
+    let body = OpamFilename.read dot_profile in
+    let pattern1 = "opam config" in
+    let pattern2 = OpamFilename.to_string (OpamPath.init t.root // "init") in
+    let pattern3 = OpamMisc.remove_prefix ~prefix:!OpamGlobals.root_dir pattern2 in
+    if mem_pattern_in_string ~pattern:pattern1 ~string:body then
+      `no
+    else if mem_pattern_in_string ~pattern:pattern2 ~string:body then
+      `no
+    else if mem_pattern_in_string ~pattern:pattern3 ~string:body then
+      `otherroot
+    else
+      `yes
+  ) else
+    `yes
+
+let update_dot_profile t dot_profile shell =
+  let pretty_dot_profile = OpamFilename.prettify dot_profile in
+  match dot_profile_needs_update t dot_profile with
+  | `no        -> OpamGlobals.msg "  %s is already up-to-date.\n" pretty_dot_profile
+  | `otherroot ->
+    OpamGlobals.msg
+      "  %s is already configured for an other OPAM root.\n"
+      pretty_dot_profile
+  | `yes       ->
+    let init_file = init_file shell in
+    let body =
+      if OpamFilename.exists dot_profile then
+        OpamFilename.read dot_profile
+      else
+        "" in
+    OpamGlobals.msg "  Updating %s.\n" pretty_dot_profile;
+    let body =
+      Printf.sprintf
+        "%s\n\n\
+         # OPAM configuration\n\
+         %s"
+        (OpamMisc.strip body) (source t init_file) in
+    OpamFilename.write dot_profile body
+
+let update_setup t user global =
+  begin match user with
+    | Some { ocamlinit = false; dot_profile = None }
+    | None   -> ()
+    | Some l ->
+      OpamGlobals.msg "User configuration:\n";
+      if l.ocamlinit then update_ocamlinit ();
+      match l.dot_profile with
+      | None   -> ()
+      | Some f -> update_dot_profile t f l.shell;
+  end;
+  begin match global with
+    | None   -> ()
+    | Some _ ->
+      OpamGlobals.msg "Global configuration:\n";
+      update_init_scripts t ~global
+  end
+
+let display_setup t shell dot_profile =
+  let print (k,v) = OpamGlobals.msg "  %-25s %35s\n" k v in
+  let not_set = "[NOT SET]" in
+  let ok      = "[OK]" in
+  let error   = "[ERROR]" in
+  let user_setup =
+    let ocamlinit_status =
+      if ocamlinit_needs_update () then not_set else ok in
+    let dot_profile_status =
+      match dot_profile_needs_update t dot_profile with
+      | `no        -> ok
+      | `yes       -> not_set
+      | `otherroot -> error in
+    [ ("~/.ocamlinit"                   , ocamlinit_status);
+      (OpamFilename.prettify dot_profile, dot_profile_status); ]
+  in
+  let init_file = init_file shell in
+  let pretty_init_file = OpamFilename.prettify (OpamPath.init t.root // init_file) in
+  let global_setup =
+    match status_of_init_file t init_file with
+    | None -> [pretty_init_file, not_set ]
+    | Some(complete_sh, complete_zsh, switch_eval_sh) ->
+      let completion =
+          if not complete_sh
+          && not complete_zsh then
+            not_set
+          else ok in
+        let switch_eval =
+          if switch_eval_sh then
+            ok
+          else
+            not_set in
+        [ ("init-script"     , Printf.sprintf "[%s]" pretty_init_file);
+          ("auto-completion" , completion);
+          ("opam-switch-eval", switch_eval);
+        ]
+  in
+  OpamGlobals.msg "User configuration:\n";
+  List.iter print user_setup;
+  OpamGlobals.msg "Global configuration:\n";
+  List.iter print global_setup
+
+let update_setup_interactive t shell dot_profile =
+  let max = 4 in
+  let current = ref 1 in
+  let stats () =
+    let c = !current in
+    incr current;
+    Printf.sprintf "[%d/%d] " c max in
+  OpamGlobals.msg "\n=-=-=-= Configuring OPAM =-=-=-=\n";
+  if confirm "Do you want to update your configuration to use OPAM ?" then (
+    let dot_profile =
+      let file =
+        match
+          read "%sDo you want to update your shell configuration file ? [default: %s]"
+            (stats ())
+            (OpamFilename.prettify dot_profile)
+        with
+        | Some "y"
+        | Some "Y"
+        | None   -> dot_profile
+        | Some s -> OpamFilename.of_string s in
+      if not (OpamFilename.exists file)
+      && not (confirm "  %S does not exist, do you want to create it ?" (OpamFilename.to_string file)) then
+        None
+      else
+        Some file in
+    let ocamlinit = confirm "%sDo you want to update your ~/.ocamlinit ?" (stats ()) in
+    let complete = confirm "%sDo you want to install the auto-complete scripts ?" (stats ()) in
+    let switch_eval = confirm "%sDo you want to install the `opam-switch-eval` script ?" (stats ()) in
+
+    let user = Some { shell; ocamlinit; dot_profile } in
+    let global = Some { complete; switch_eval } in
+    update_setup t user global
+  )
+
+let print_env_warning t user =
   match
     List.filter
       (fun (s, v) ->
@@ -869,29 +1230,42 @@ let print_env_warning ?(add_profile = false) t =
       (get_opam_env t)
   with
     | [] -> () (* every variables are correctly set *)
-    | l ->
-      let which_opam =
-        if add_profile then
-          "which opam && "
-        else
-          "" in
-      let add_profile =
-        if add_profile then
-          "\nand add this in your ~/.profile"
-        else
-          "" in
-      let opam_root =
-        if !OpamGlobals.root_dir = OpamGlobals.default_opam_dir then
-          ""
-        else
-          Printf.sprintf " --root %s" !OpamGlobals.root_dir in
-      let variables = String.concat ", " (List.map (fun (s, _) -> "$" ^ s) l) in
-      OpamGlobals.msg "\nTo update %s; you can now run:\n\n    $ %seval `opam config env%s`\n%s\n"
-        variables
-        which_opam
-        opam_root
-        add_profile
-
+    | _  ->
+      let eval () =
+        let root =
+          if !OpamGlobals.root_dir <> OpamGlobals.default_opam_dir then
+            Printf.sprintf " --root=%s" !OpamGlobals.root_dir
+          else
+            "" in
+        Printf.sprintf "eval `opam config env%s`\n" root in
+      let eval_string =
+        match user with
+        | None   -> eval ()
+        | Some u ->
+          let file = OpamPath.init t.root // init_file u.shell in
+          if not (OpamFilename.exists file) then
+            eval ()
+          else
+            source t (init_file u.shell) in
+      let profile_string = match user with
+        | None   -> ""
+        | Some u ->
+          match u.dot_profile with
+          | None             -> ""
+          | Some dot_profile ->
+            if dot_profile_needs_update t dot_profile = `yes then
+              Printf.sprintf "And add it to your %s.\n\n" (OpamFilename.prettify dot_profile)
+            else
+              "" in
+      let line = "=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=" in
+      OpamGlobals.msg
+        "\n%s\n\
+         \n\
+         To complete the configuration of OPAM, you need to run:\n\
+         \n\
+        \    %s\n\
+         %s%s\n\n"
+        line eval_string profile_string line
 
 (* Add the given packages to the set of package to reinstall. If [all]
    is set, this is done for ALL the switches (useful when a package
@@ -930,7 +1304,7 @@ let install_conf_ocaml_config root switch =
   log "install_conf_ocaml_config switch=%s" (OpamSwitch.to_string switch);
   (* .config *)
   let vars =
-    let map f l = List.map (fun (s,p) -> OpamVariable.of_string s, S (f p)) l in
+    let map f l = List.rev_map (fun (s,p) -> OpamVariable.of_string s, S (f p)) l in
     let id x = x in
 
     map OpamFilename.Dir.to_string
@@ -1038,15 +1412,12 @@ let install_compiler t ~quiet switch compiler =
           ]
       end else begin
         let t = { t with switch } in
-        let builds =
-          List.map (List.map (substitute_string t)) (OpamFile.Comp.build comp) in
+        let builds = filter_commands t (OpamFile.Comp.build comp) in
         OpamFilename.exec build_dir builds
       end;
     end;
 
-    (* write the new version in the configuration file *)
-    let config = OpamFile.Config.with_switch t.config switch in
-    OpamFile.Config.write (OpamPath.config t.root) config;
+    (* Update ~/.opam/aliases *)
     add_switch t.root switch compiler
 
   with e ->
@@ -1054,6 +1425,12 @@ let install_compiler t ~quiet switch compiler =
       OpamFilename.rmdir switch_dir;
     raise e
   end
+
+(* write the new version in the configuration file *)
+let update_switch_config t switch =
+  let config = OpamFile.Config.with_switch t.config switch in
+  OpamFile.Config.write (OpamPath.config t.root) config;
+  update_init_scripts { t with switch }  ~global:None
 
 let update_pinned_package t n =
   if OpamPackage.Name.Map.mem n t.pinned then
@@ -1079,10 +1456,11 @@ let check f =
     OpamFilename.with_flock (OpamPath.Switch.lock root a) f in
   let error () =
     OpamGlobals.error_and_exit
-      "Cannot find %s. Have you run 'opam init' first ?"
+      "Please run 'opam init' first to initialize the state of OPAM."
       (OpamFilename.Dir.to_string root) in
 
-  if not (OpamFilename.exists_dir root) then
+  if not (OpamFilename.exists_dir root)
+  || not (OpamFilename.exists (OpamPath.config root)) then
     error ()
 
   else match f with
@@ -1134,6 +1512,7 @@ module Types = struct
     opams: OpamFile.OPAM.t package_map;
     descrs: OpamFile.Descr.t package_map;
     repositories: OpamFile.Repo_config.t repository_name_map;
+    prefixes: OpamFile.Prefix.t repository_name_map;
     packages: package_set;
     available_packages: package_set Lazy.t;
     aliases: OpamFile.Aliases.t;

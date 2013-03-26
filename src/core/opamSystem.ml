@@ -60,7 +60,6 @@ let mkdir dir =
     end in
   aux dir
 
-
 let temp_file ?dir prefix =
   let temp_dir = match dir with
     | None   -> !OpamGlobals.root_dir / "log"
@@ -69,9 +68,13 @@ let temp_file ?dir prefix =
   temp_dir / Printf.sprintf "%s-%06x" prefix (Random.int 0xFFFFFF)
 
 let remove_file file =
-  try Unix.unlink file
-  with Unix.Unix_error _ -> ()
-
+  if Sys.file_exists file
+  || (try let _ = Unix.lstat file in true with _ -> false)
+  then (
+    try Unix.unlink file
+    with e ->
+      internal_error "Cannot remove %s (%s)." file (Printexc.to_string e)
+  )
 
 let string_of_channel ic =
   let n = 32768 in
@@ -125,7 +128,8 @@ let list kind dir =
       let d = Sys.readdir (Sys.getcwd ()) in
       let d = Array.to_list d in
       let l = List.filter kind d in
-      List.sort compare (List.map (Filename.concat dir) l))
+      List.sort compare (List.rev_map (Filename.concat dir) l)
+    )
   else
     []
 
@@ -148,12 +152,19 @@ let rec_files dir =
     List.fold_left aux (f @ accu) d in
   aux [] dir
 
+let rec_dirs dir =
+  let rec aux accu dir =
+    let d = directories_with_links dir in
+    List.fold_left aux (d @ accu) d in
+  aux [] dir
+
 (* WARNING it fails if [dir] is not a [S_DIR] or simlinks to a directory *)
 let rec remove_dir dir =
   if Sys.file_exists dir then begin
     List.iter remove_file (files_all_not_dir dir);
     List.iter remove_dir (directories_strict dir);
-    Unix.rmdir dir;
+    try Unix.rmdir dir
+    with e -> internal_error "Cannot remove %s (%s)." dir (Printexc.to_string e)
   end
 
 let with_tmp_dir fn =
@@ -209,12 +220,12 @@ let default_env =
 let reset_env = lazy (
   let env = OpamMisc.env () in
   let env =
-    List.map (fun (k,v as c) ->
+    List.rev_map (fun (k,v as c) ->
       match k with
       | "PATH" -> k, String.concat ":" (OpamMisc.reset_env_value ~prefix:!OpamGlobals.root_dir v)
       | _      -> c
     ) env in
-  let env = List.map (fun (k,v) -> k^"="^v) env in
+  let env = List.rev_map (fun (k,v) -> k^"="^v) env in
   Array.of_list env
 )
 
@@ -306,7 +317,7 @@ module Tar = struct
   let is_archive f =
     List.exists
       (fun suff -> Filename.check_suffix f suff)
-      (List.concat (List.map fst extensions))
+      (List.concat (List.rev_map fst extensions))
 
   let extract_function file =
     let command c dir =
@@ -352,7 +363,7 @@ let extract file dst =
         | [x] ->
             mkdir (Filename.dirname dst);
             command [ "mv"; x; dst]
-        | _   -> internal_error "The archive contains mutliple root directories."
+        | _   -> internal_error "The archive contains multiple root directories."
   )
 
 let extract_in file dst =
@@ -370,14 +381,16 @@ let archive filename files dst =
   | Some f -> f dst
 
 let link src dst =
-  mkdir (Filename.dirname dst);
-  if Sys.file_exists dst then
-    remove_file dst;
-  try
-    Unix.link src dst
-  with Unix.Unix_error (Unix.EXDEV, _, _) ->
-    (* Fall back to copy if hard links are not supported *)
-    copy src dst
+  if Sys.file_exists src then (
+    mkdir (Filename.dirname dst);
+    if Sys.file_exists dst then
+      remove_file dst;
+    try Unix.link src dst
+    with Unix.Unix_error (Unix.EXDEV, _, _) ->
+      (* Fall back to copy if hard links are not supported *)
+      copy src dst
+  ) else
+    internal_error "link: %s does not exist." src
 
 let flock file =
   let l = ref 0 in
@@ -547,12 +560,26 @@ let patch p =
   aux 0
 
 let () =
+  let with_opam_info m =
+    let git_version = match OpamVersion.git with
+      | None   -> ""
+      | Some v -> Printf.sprintf " (%s)" (OpamVersion.to_string v) in
+    let opam_version =
+      Printf.sprintf "%s%s" (OpamVersion.to_string OpamVersion.current) git_version in
+    let os = OpamGlobals.os_string () in
+    Printf.sprintf
+      "# %-15s %s\n\
+       # %-15s %s\n\
+       %s"
+      "opam-version" opam_version
+      "os" os
+      m in
   Printexc.register_printer (function
     | Process_error r  -> Some (OpamProcess.string_of_result r)
-    | Internal_error m -> Some m
-    | Unix.Unix_error (e,fn, msg) ->
+    | Internal_error m -> Some (with_opam_info m)
+    | Unix.Unix_error (e, fn, msg) ->
       let msg = if msg = "" then "" else " on " ^ msg in
       let error = Printf.sprintf "%s: %S failed%s: %s" Sys.argv.(0) fn msg (Unix.error_message e) in
-      Some error
+      Some (with_opam_info error)
     | _ -> None
   )

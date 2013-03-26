@@ -20,8 +20,8 @@ let log fmt = OpamGlobals.log "GIT" fmt
 
 let git_fetch local_path remote_address commit =
   OpamGlobals.msg "Synchronizing %s with %s%s.\n"
-    (OpamFilename.Dir.to_string local_path)
-    (OpamFilename.Dir.to_string remote_address)
+    (OpamFilename.prettify_dir local_path)
+    (OpamFilename.prettify_dir remote_address)
     (match commit with
     | None   -> ""
     | Some c -> Printf.sprintf " [%s]" c);
@@ -60,7 +60,7 @@ let git_diff local_path commit =
         | Some lines -> lines
         | None       -> OpamSystem.internal_error "Unknown revision: %s." commit
     in
-    OpamFilename.Set.of_list (List.map OpamFilename.of_string lines)
+    OpamFilename.Set.of_list (List.rev_map OpamFilename.of_string lines)
   )
 
 let git_init address =
@@ -152,7 +152,7 @@ module B = struct
 
   let upload_dir ~address:_ dirname =
     log "upload_dir";
-    let files = OpamFilename.list_files dirname in
+    let files = OpamFilename.rec_files dirname in
     try
       OpamSystem.commands [
         [ "git"; "add"; OpamFilename.Dir.to_string dirname; ];

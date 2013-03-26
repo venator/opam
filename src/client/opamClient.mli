@@ -21,7 +21,10 @@ open OpamTypes
 module API: sig
 
   (** Initialize the client a consistent state. *)
-  val init: repository -> compiler -> jobs:int -> unit
+  val init:
+    repository -> compiler -> jobs:int ->
+    shell -> filename -> [`ask|`yes|`no] ->
+    unit
 
   (** Display all available packages that matches any of the
      regexps. *)
@@ -66,6 +69,15 @@ module API: sig
     (** Display environment. *)
     val env: csh:bool -> unit
 
+    (** Global and user setup of OPAM. *)
+    val setup: user_config option -> global_config option -> unit
+
+    (** Display global and user informations about OPAM setup. *)
+    val setup_list: shell -> filename -> unit
+
+    (** Execute a command in a subshell with the right environment variables. *)
+    val exec: string -> unit
+
     (** Display includes files. *)
     val includes: is_rec:bool -> name list -> unit
 
@@ -101,10 +113,10 @@ module API: sig
   module SWITCH: sig
 
     (** Switch to the given compiler. Take the global file lock. *)
-    val switch: quiet:bool -> switch -> unit
+    val switch: quiet:bool -> warning:bool -> switch -> unit
 
     (** Install the given compiler. *)
-    val install: quiet:bool -> switch -> compiler -> unit
+    val install: quiet:bool -> warning:bool -> update_config:bool -> switch -> compiler -> unit
 
     (** Import the packages from a file. If no filename is specified,
         read stdin. *)

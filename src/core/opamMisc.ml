@@ -44,7 +44,18 @@ end
 
 let string_of_list f = function
   | [] -> "{}"
-  | l  -> Printf.sprintf "{ %s }" (String.concat ", " (List.map f l))
+  | l  ->
+    let buf = Buffer.create 1024 in
+    let n = List.length l in
+    let i = ref 0 in
+    Buffer.add_string buf "{ ";
+    List.iter (fun x ->
+      incr i;
+      Buffer.add_string buf (f x);
+      if !i <> n then Buffer.add_string buf ", ";
+    ) l;
+    Buffer.add_string buf " }";
+    Buffer.contents buf
 
 let rec pretty_list = function
   | []    -> ""
@@ -70,11 +81,11 @@ module Set = struct
       List.fold_left (fun set e -> add e set) empty l
 
     let to_string s =
-      let l = fold (fun nv l -> O.to_string nv :: l) s [] in
-      string_of_list (fun x -> x) l
+      let l = S.fold (fun nv l -> O.to_string nv :: l) s [] in
+      string_of_list (fun x -> x) (List.rev l)
 
     let map f t =
-      of_list (List.map f (elements t))
+      S.fold (fun e set -> S.add (f e) set) t S.empty
 
     let find fn s =
       choose (filter fn s)
@@ -91,9 +102,11 @@ module Map = struct
 
     include M
 
-    let values map = List.map snd (bindings map)
+    let values map =
+      List.rev (M.fold (fun _ v acc -> v :: acc) map [])
 
-    let keys map = List.map fst (bindings map)
+    let keys map =
+      List.rev (M.fold (fun k _ acc -> k :: acc) map [])
 
     let union f m1 m2 =
       M.fold (fun k v m ->
@@ -193,18 +206,32 @@ let strip str =
   String.sub str p (!l - p + 1)
 
 let starts_with ~prefix s =
-  String.length s >= String.length prefix
-  && String.sub s 0 (String.length prefix) = prefix
+  let x = String.length prefix in
+  let n = String.length s in
+  n >= x
+  && String.sub s 0 x = prefix
 
 let ends_with ~suffix s =
-  String.length s >= String.length suffix
-  && String.sub s (String.length s - String.length suffix) (String.length suffix) = suffix
+  let x = String.length suffix in
+  let n = String.length s in
+  n >= x
+  && String.sub s (n - x) x = suffix
 
 let remove_prefix ~prefix s =
   if starts_with ~prefix s then
-    Some (String.sub s (String.length prefix) (String.length s - String.length prefix))
+    let x = String.length prefix in
+    let n = String.length s in
+    String.sub s x (n - x)
   else
-    None
+    s
+
+let remove_suffix ~suffix s =
+  if ends_with ~suffix s then
+    let x = String.length suffix in
+    let n = String.length s in
+    String.sub s 0 (n - x)
+  else
+    s
 
 let cut_at_aux fn s sep =
   try
@@ -259,7 +286,7 @@ let insert comp x l =
 
 let env = lazy (
   let e = Unix.environment () in
-  List.map (fun s ->
+  List.rev_map (fun s ->
     match cut_at s '=' with
     | None   -> s, ""
     | Some p -> p
@@ -342,3 +369,29 @@ let uname_s () =
       (fun ic -> Some (strip (input_line ic)))
   with _ ->
     None
+
+let guess_shell_compat () =
+  try
+    match Filename.basename (getenv "SHELL") with
+    | "tcsh"
+    | "csh"  -> `csh
+    | "zsh"  -> `zsh
+    | "bash" -> `bash
+    | _      -> `sh
+  with _ ->
+    `sh
+
+let guess_dot_profile shell =
+  let home f =
+    try Filename.concat (getenv "HOME") f
+    with _ -> f in
+  match shell with
+  | `zsh  -> home ".zshrc"
+  | `bash ->
+    let bash_profile = home ".bash_profile" in
+    let bashrc = home ".bashrc" in
+    if Sys.file_exists bash_profile then
+      bash_profile
+    else
+      bashrc
+  | _     -> home ".profile"

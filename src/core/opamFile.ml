@@ -53,7 +53,7 @@ module Syntax = struct
       let too_many, invalids = List.partition (fun x -> List.mem x fields) invalids in
       if too_many <> [] then
         OpamGlobals.error
-          "%s appear too many times in %s"
+          "%s appears too many times in %s"
           f.file_name
           (OpamMisc.string_of_list (fun x -> x) too_many);
       if invalids <> [] then
@@ -66,6 +66,34 @@ module Syntax = struct
 end
 
 module X = struct
+
+module Prefix = struct
+
+  let internal = "prefix"
+
+  type t = string name_map
+
+  let empty = OpamPackage.Name.Map.empty
+
+  let of_string _ s =
+    let lines = Lines.of_string s in
+    List.fold_left (fun map -> function
+      | []          -> map
+      | [nv;prefix] -> OpamPackage.Name.Map.add (OpamPackage.Name.of_string nv) prefix map
+      | s ->
+        OpamGlobals.error_and_exit
+          "%S is not a valid prefix line"
+          (String.concat " " s)
+    ) OpamPackage.Name.Map.empty lines
+
+  let to_string _ s =
+    let lines =
+      OpamPackage.Name.Map.fold (fun nv prefix l ->
+        [OpamPackage.Name.to_string nv; prefix] :: l
+      ) s [] in
+    Lines.to_string lines
+
+end
 
 module Filenames = struct
 
@@ -87,7 +115,9 @@ module Filenames = struct
 
   let to_string _ s =
     let lines =
-      List.map (fun f -> [OpamFilename.to_string f]) (OpamFilename.Set.elements s) in
+      List.rev_map
+        (fun f -> [OpamFilename.to_string f])
+        (OpamFilename.Set.elements s) in
     Lines.to_string lines
 
 end
@@ -110,7 +140,9 @@ module Urls_txt = struct
 
   let to_string _ t =
     let lines =
-      List.map (fun r -> [OpamFilename.Attribute.to_string r]) (OpamFilename.Attribute.Set.elements t) in
+      List.rev_map
+        (fun r -> [OpamFilename.Attribute.to_string r])
+        (OpamFilename.Attribute.Set.elements t) in
     Lines.to_string lines
 
 end
@@ -744,7 +776,7 @@ module OPAM = struct
         @ listm   t.build_test    s_build_test    OpamFormat.make_command
         @ listm   t.build_doc     s_build_doc     OpamFormat.make_command
         @ option  t.depexts       s_depexts       OpamFormat.make_tags
-        @ List.map (fun (s, v) -> Variable (s, v)) t.others;
+        @ List.rev (List.rev_map (fun (s, v) -> Variable (s, v)) t.others);
     } in
     Syntax.to_string
       ~indent_variable:(fun s -> List.mem s [s_build ; s_remove ; s_depends ; s_depopts])
@@ -767,7 +799,7 @@ module OPAM = struct
       | Some n, Some nv ->
           if OpamPackage.name nv <> n then
             OpamGlobals.error_and_exit
-              "Inconsistant naming scheme in %s"
+              "Inconsistent naming scheme in %s"
               (OpamFilename.to_string filename)
           else
             n in
@@ -780,7 +812,7 @@ module OPAM = struct
       | Some v, Some nv ->
           if OpamPackage.version nv <> v then
             OpamGlobals.error_and_exit
-              "Inconsistant versioning scheme in %s"
+              "Inconsistent versioning scheme in %s"
               (OpamFilename.to_string filename)
           else
             v in
@@ -994,7 +1026,7 @@ module Dot_config = struct
     ] in
     let parse_variables items =
       let l = List.filter (fun (x,_) -> not (List.mem x valid_fields)) (OpamFormat.variables items) in
-      List.map (fun (k,v) -> OpamVariable.of_string k, parse_value v) l in
+      List.rev_map (fun (k,v) -> OpamVariable.of_string k, parse_value v) l in
     let parse_requires = OpamFormat.parse_list (OpamFormat.parse_string |> OpamVariable.Section.of_string) in
     let parse_section kind s =
       let name =  OpamVariable.Section.of_string s.section_name in
@@ -1016,7 +1048,7 @@ module Dot_config = struct
       | B b -> Bool b
       | S s -> String s in
     let of_variables l =
-      List.map (fun (k,v) -> Variable (OpamVariable.to_string k, of_value v)) l in
+      List.rev_map (fun (k,v) -> Variable (OpamVariable.to_string k, of_value v)) l in
     let make_require = OpamVariable.Section.to_string |> OpamFormat.make_string in
     let of_section s =
       Section
@@ -1034,10 +1066,10 @@ module Dot_config = struct
       file_name     = OpamFilename.to_string filename;
       file_contents =
         of_variables t.variables
-        @ List.map of_section t.sections
+        @ List.rev (List.rev_map of_section t.sections)
     }
 
-  let variables t = List.map fst t.variables
+  let variables t = List.rev_map fst t.variables
 
   let variable t s = List.assoc s t.variables
 
@@ -1058,7 +1090,7 @@ module Dot_config = struct
     let find t name =
       List.find (fun s -> s.name = name) (M.get t)
 
-    let available t = List.map (fun s -> s.name) (M.get t)
+    let available t = List.rev_map (fun s -> s.name) (M.get t)
     let kind t s = (find t s).kind
     let bytecomp t s = (find t s).bytecomp
     let asmcomp  t s = (find t s).asmcomp
@@ -1066,7 +1098,7 @@ module Dot_config = struct
     let asmlink  t s = (find t s).asmlink
     let requires t s = (find t s).requires
     let variable t n s = List.assoc s (find t n).lvariables
-    let variables t n = List.map fst (find t n).lvariables
+    let variables t n = List.rev_map fst (find t n).lvariables
   end
 
   let filter t n = List.filter (fun s -> s.kind = n) t.sections
@@ -1088,7 +1120,7 @@ module Comp = struct
     patches      : filename list ;
     configure    : string list ;
     make         : string list ;
-    build        : string list list ;
+    build        : command list ;
     bytecomp     : string list ;
     asmcomp      : string list ;
     bytelink     : string list ;
@@ -1097,6 +1129,7 @@ module Comp = struct
     requires     : section list;
     pp           : ppflag option;
     env          : (string * string * string) list;
+    tags         : string list;
   }
 
   let empty = {
@@ -1117,6 +1150,7 @@ module Comp = struct
     requires  = [];
     pp        = None;
     env       = [];
+    tags      = [];
   }
 
   let create_preinstalled name version packages env =
@@ -1143,6 +1177,7 @@ module Comp = struct
   let s_pp        = "pp"
   let s_env       = "env"
   let s_preinstalled = "preinstalled"
+  let s_tags      = "tags"
 
   let valid_fields = [
     s_opam_version;
@@ -1162,6 +1197,7 @@ module Comp = struct
     s_pp;
     s_env;
     s_preinstalled;
+    s_tags;
   ]
 
   let name t = t.name
@@ -1180,6 +1216,7 @@ module Comp = struct
   let pp t = t.pp
   let preinstalled t = t.preinstalled
   let env t = t.env
+  let tags t = t.tags
 
   let of_string filename str =
     let file = Syntax.of_string filename str in
@@ -1222,7 +1259,7 @@ module Comp = struct
         (OpamFormat.parse_list (OpamFormat.parse_string |> OpamFilename.raw_file)) in
     let configure = OpamFormat.assoc_string_list s s_configure in
     let make = OpamFormat.assoc_string_list s s_make      in
-    let build = OpamFormat.assoc_list s s_build (OpamFormat.parse_list OpamFormat.parse_string_list) in
+    let build = OpamFormat.assoc_list s s_build OpamFormat.parse_commands in
     let env = OpamFormat.assoc_list s s_env (OpamFormat.parse_list OpamFormat.parse_env_variable) in
     let bytecomp = OpamFormat.assoc_string_list s s_bytecomp  in
     let asmcomp = OpamFormat.assoc_string_list s s_asmcomp   in
@@ -1234,6 +1271,7 @@ module Comp = struct
         (OpamFormat.parse_list (OpamFormat.parse_string |> OpamVariable.Section.of_string)) in
     let pp = OpamFormat.assoc_default None s s_pp parse_ppflags in
     let preinstalled = OpamFormat.assoc_default false  s s_preinstalled OpamFormat.parse_bool in
+    let tags = OpamFormat.assoc_string_list s s_tags in
 
     if build <> [] && (configure @ make) <> [] then
       OpamGlobals.error_and_exit "You cannot use 'build' and 'make'/'configure' \
@@ -1247,12 +1285,13 @@ module Comp = struct
       bytecomp; asmcomp; bytelink; asmlink; packages;
       requires; pp;
       preinstalled; env;
+      tags;
     }
 
   let to_string filename s =
     let make_ppflag = function
       | Cmd l    -> OpamFormat.make_string_list l
-      | Camlp4 l -> List (Symbol "CAMLP4" :: List.map OpamFormat.make_string l) in
+      | Camlp4 l -> List (Symbol "CAMLP4" :: List.rev (List.rev_map OpamFormat.make_string l)) in
     Syntax.to_string {
       file_name     = OpamFilename.to_string filename;
       file_contents = [
@@ -1266,7 +1305,7 @@ module Comp = struct
         Variable (s_patches     , OpamFormat.make_list (OpamFilename.to_string |> OpamFormat.make_string) s.patches);
         Variable (s_configure   , OpamFormat.make_string_list s.configure);
         Variable (s_make        , OpamFormat.make_string_list s.make);
-        Variable (s_build       , OpamFormat.make_list OpamFormat.make_string_list s.build);
+        Variable (s_build       , OpamFormat.make_commands s.build);
         Variable (s_bytecomp    , OpamFormat.make_string_list s.bytecomp);
         Variable (s_asmcomp     , OpamFormat.make_string_list s.asmcomp);
         Variable (s_bytelink    , OpamFormat.make_string_list s.bytelink);
@@ -1274,6 +1313,7 @@ module Comp = struct
         Variable (s_packages    , OpamFormat.make_formula s.packages);
         Variable (s_requires    , OpamFormat.make_list (OpamVariable.Section.to_string |> OpamFormat.make_string) s.requires);
         Variable (s_env         , OpamFormat.make_list OpamFormat.make_env_variable s.env);
+        Variable (s_tags        , OpamFormat.make_string_list s.tags);
       ] @ (match s.pp with
         | None    -> []
         | Some pp -> [ Variable (s_pp, make_ppflag pp) ]
@@ -1520,3 +1560,7 @@ module Filenames = struct
   include Make(Filenames)
 end
 
+module Prefix = struct
+  include Prefix
+  include Make(Prefix)
+end

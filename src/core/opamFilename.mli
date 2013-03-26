@@ -30,8 +30,11 @@ val rmdir: Dir.t -> unit
 (** Create a directory *)
 val mkdir: Dir.t -> unit
 
+(** List the sub-directory recursively *)
+val rec_dirs: Dir.t -> Dir.t list
+
 (** List the sub-directory *)
-val list_dirs: Dir.t -> Dir.t list
+val sub_dirs: Dir.t -> Dir.t list
 
 (** Evaluate a function in a given directory *)
 val in_dir: Dir.t -> (unit -> 'a) -> 'a
@@ -78,6 +81,15 @@ val of_basename: Base.t -> t
 (** Creation from a raw string (as {i http://<path>}) *)
 val raw_file: string -> t
 
+(** Prettify a filename:
+    - replace /path/to/opam/foo by <opam>/foo
+    - replace /path/to/home/foo by ~/foo *)
+val prettify: t -> string
+
+(** Prettify a dirname. *)
+val prettify_dir: Dir.t -> string
+
+
 (** Return the directory name *)
 val dirname: t -> Dir.t
 
@@ -106,7 +118,7 @@ val add_extension: t -> string -> t
 val chop_extension: t -> t
 
 (** List all the filenames, recursively *)
-val list_files: Dir.t -> t list
+val rec_files: Dir.t -> t list
 
 (** Apply a function on the contents of a file *)
 val with_contents: (string -> 'a) -> t -> 'a
@@ -137,7 +149,10 @@ val extract_in: t -> Dir.t -> unit
 val starts_with: Dir.t -> t -> bool
 
 (** Remove a prefix from a file name *)
-val remove_prefix: prefix:Dir.t -> t -> string
+val remove_prefix: Dir.t -> t -> string
+
+(** Remove a suffix from a filename *)
+val remove_suffix: Base.t -> t -> string
 
 (** download a remote file in a given directory. Return the location
     of the downloaded file if the download is successful.  *)
