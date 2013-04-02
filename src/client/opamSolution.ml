@@ -94,8 +94,10 @@ let atoms_of_names t names =
             eq_atom sname sversion
           else
             unavailable sname (Some sversion)
-        else
+        else if exists sname None then
           OpamPackage.unknown sname (Some sversion)
+        else
+          OpamPackage.unknown sname None
       ))
     (OpamPackage.Name.Set.elements names)
 
@@ -182,7 +184,7 @@ let can_try_to_recover_from_error l =
     | To_recompile _
     | To_change _
     | To_delete _         -> false
-    ) l
+  ) l
 
 (* Try to recover from errors by installing either the old packages or
    by reinstalling the current ones. This can also fail but if it

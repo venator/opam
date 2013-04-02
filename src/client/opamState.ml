@@ -229,21 +229,25 @@ let compiler_repository_map t =
 let is_pinned_aux pinned n =
   OpamPackage.Name.Map.mem n pinned
 
-let pinned_package_aux pinned packages n =
+let pinned_package_aux installed pinned packages n =
   match OpamPackage.Name.Map.find n pinned with
   | Version v -> OpamPackage.create n v
   | _         ->
-    (* We arbitrary select only the latest version; the solver
-       will see this package only, which means that it will use
-       the correspondng build instructions, but the location
-       will be the one pointed out by the pinned path. *)
-    let versions = OpamPackage.versions_of_name packages n in
-    OpamPackage.create n (OpamPackage.Version.Set.max_elt versions)
-
-let is_pinned t n = is_pinned_aux t.pinned n
+    if mem_installed_package_by_name_aux installed n then
+      find_installed_package_by_name_aux installed n
+    else (
+      (* We arbitrary select only the latest version; the solver will
+         see this package only, which means that it will use the
+         correspondng build instructions, but the location will be the
+         one pointed out by the pinned path. *)
+      let versions = OpamPackage.versions_of_name packages n in
+      OpamPackage.create n (OpamPackage.Version.Set.max_elt versions)
+    )
 
 let pinned_package t n =
-  pinned_package_aux t.pinned t.packages n
+  pinned_package_aux t.installed t.pinned t.packages n
+
+let is_pinned t n = is_pinned_aux t.pinned n
 
 let pinned_path t name =
   if OpamPackage.Name.Map.mem name t.pinned then
@@ -293,7 +297,7 @@ let available_packages
       let consistent_pinned_version () =
         let name = OpamPackage.name nv in
         not (is_pinned_aux pinned name)
-        || pinned_package_aux pinned packages name = nv
+        || pinned_package_aux installed pinned packages name = nv
       in
       available ()
       && consistent_ocaml_version ()
@@ -316,11 +320,11 @@ let create_system_compiler_description root = function
         OpamCompiler.system version
         (if not !OpamGlobals.no_base_packages then base_packages else [])
         [ ("CAML_LD_LIBRARY_PATH", "=",
-           "%{lib}%/stublibs"
-           ^ ":" ^
-             (match Lazy.force OpamSystem.system_ocamlc_where with
-             | Some d -> Filename.concat d "stublibs"
-             | None   -> assert false))
+          "%{lib}%/stublibs"
+          ^ ":" ^
+          (match Lazy.force OpamSystem.system_ocamlc_where with
+           | Some d -> Filename.concat d "stublibs"
+           | None   -> assert false))
         ] in
     OpamFile.Comp.write comp f
 
@@ -364,8 +368,10 @@ let load_repository_state call_site =
     let fn repo_p = OpamRepository.read_prefix repo_p in
     make_repository_name_map fn root config in
   let switch = match !OpamGlobals.switch with
-    | None   -> OpamFile.Config.switch config
-    | Some a -> OpamSwitch.of_string a in
+    | `Command_line s
+    | `Env s   -> OpamSwitch.of_string s
+    | `Not_set -> OpamFile.Config.switch config in
+
   let partial = true in
 
   (* evertything else is empty *)
@@ -394,8 +400,9 @@ let load_env_state call_site =
   let config_p = OpamPath.config root in
   let config = OpamFile.Config.read config_p in
   let switch = match !OpamGlobals.switch with
-    | None   -> OpamFile.Config.switch config
-    | Some a -> OpamSwitch.of_string a in
+    | `Command_line s
+    | `Env s   -> OpamSwitch.of_string s
+    | `Not_set -> OpamFile.Config.switch config in
   let aliases = OpamFile.Aliases.safe_read (OpamPath.aliases root) in
   let compiler =
     try OpamSwitch.Map.find switch aliases
@@ -463,7 +470,7 @@ let check_base_packages t =
     let names = List.map (fst |> OpamPackage.Name.to_string) missing_packages in
     OpamGlobals.warning "Some of the compiler base packages are not installed. \
                          You should run:\n\n    $ opam install %s\n"
-                         (String.concat " " names)
+      (String.concat " " names)
   )
 
 let all_installed t =
@@ -507,13 +514,13 @@ let switch_consistency_checks t =
     let pin_dir = pin_cache / name in
     clean pin_dir name in
   let available =
-      let dirs = OpamFilename.rec_dirs pin_cache in
-      let pkgs = List.rev_map (
-          OpamFilename.basename_dir
-          |> OpamFilename.Base.to_string
-          |> OpamPackage.Name.of_string
-        ) dirs in
-      OpamPackage.Name.Set.of_list pkgs in
+    let dirs = OpamFilename.rec_dirs pin_cache in
+    let pkgs = List.rev_map (
+        OpamFilename.basename_dir
+        |> OpamFilename.Base.to_string
+        |> OpamPackage.Name.of_string
+      ) dirs in
+    OpamPackage.Name.Set.of_list pkgs in
   let installed = OpamPackage.names_of_packages t.installed in
   let not_installed = OpamPackage.Name.Set.diff available installed in
   OpamPackage.Name.Set.iter clean_pin not_installed
@@ -615,8 +622,9 @@ let load_state ?(save_cache=true) call_site =
   let partial = false in
 
   let switch = match !OpamGlobals.switch with
-    | None   -> OpamFile.Config.switch config
-    | Some a -> OpamSwitch.of_string a in
+    | `Command_line s
+    | `Env s   -> OpamSwitch.of_string s
+    | `Not_set -> OpamFile.Config.switch config in
   let aliases = OpamFile.Aliases.safe_read (OpamPath.aliases root) in
   let switch, compiler =
     try switch, OpamSwitch.Map.find switch aliases
@@ -625,8 +633,9 @@ let load_state ?(save_cache=true) call_site =
         (OpamFilename.to_string (OpamPath.aliases root))
         (OpamSwitch.to_string switch);
       match !OpamGlobals.switch with
-      | Some s -> OpamSwitch.not_installed (OpamSwitch.of_string s)
-      | None   ->
+      | `Command_line s
+      | `Env s   -> OpamSwitch.not_installed (OpamSwitch.of_string s)
+      | `Not_set ->
         if OpamSwitch.Map.cardinal aliases > 0 then (
           let new_switch, new_compiler = OpamSwitch.Map.choose aliases in
           OpamGlobals.error "The current switch (%s) is an unknown compiler switch. Switching back to %s ..."
@@ -900,10 +909,10 @@ let env_updates t =
   let man_path =
     "MANPATH", ":=", OpamFilename.Dir.to_string (OpamPath.Switch.man_dir t.root t.switch) in
   let comp_env = OpamFile.Comp.env comp in
-  let switch =
-    match !OpamGlobals.switch with
-    | None   -> []
-    | Some s -> [ "OPAMSWITCH", "=", s ] in
+  let switch = match !OpamGlobals.switch with
+    | `Command_line s -> [ "OPAMSWITCH", "=", s ]
+    | `Env _
+    | `Not_set -> [] in
   let root =
     if !OpamGlobals.root_dir <> OpamGlobals.default_opam_dir then
       [ "OPAMROOT", "=", !OpamGlobals.root_dir ]
@@ -912,7 +921,19 @@ let env_updates t =
 
   new_path :: man_path :: toplevel_dir :: (switch @ root @ comp_env)
 
+(* This function is used by 'opam config env' and 'opam switch' to
+   display the environment variables. We have to make sure that
+   OPAMSWITCH is always the one being reported in '~/.opa/config'
+   otherwise we can have very weird results (as the inability to switch
+   between compilers).
+
+   Note: when we do the later command with --switch=SWITCH, this mean
+   we really want to get the environment for this switch. *)
 let get_opam_env t =
+  let t = match !OpamGlobals.switch with
+    | `Command_line _
+    | `Not_set -> t
+    | `Env _   -> { t with switch = OpamFile.Config.switch t.config } in
   add_to_env t [] (env_updates t)
 
 let get_full_env t =
@@ -1031,7 +1052,7 @@ let update_init_scripts t ~global =
     (variables_sh  , string_of_env_update t `sh  (env_updates t));
     (variables_csh , string_of_env_update t `csh (env_updates t));
   ] @
-      init_scripts
+                init_scripts
   in
   let overwrite = [
     init_sh;
@@ -1169,19 +1190,19 @@ let display_setup t shell dot_profile =
     | None -> [pretty_init_file, not_set ]
     | Some(complete_sh, complete_zsh, switch_eval_sh) ->
       let completion =
-          if not complete_sh
-          && not complete_zsh then
-            not_set
-          else ok in
-        let switch_eval =
-          if switch_eval_sh then
-            ok
-          else
-            not_set in
-        [ ("init-script"     , Printf.sprintf "[%s]" pretty_init_file);
-          ("auto-completion" , completion);
-          ("opam-switch-eval", switch_eval);
-        ]
+        if not complete_sh
+        && not complete_zsh then
+          not_set
+        else ok in
+      let switch_eval =
+        if switch_eval_sh then
+          ok
+        else
+          not_set in
+      [ ("init-script"     , Printf.sprintf "[%s]" pretty_init_file);
+        ("auto-completion" , completion);
+        ("opam-switch-eval", switch_eval);
+      ]
   in
   OpamGlobals.msg "User configuration:\n";
   List.iter print user_setup;
@@ -1229,43 +1250,43 @@ let print_env_warning t user =
         Some v <> try Some (OpamMisc.getenv s) with _ -> None)
       (get_opam_env t)
   with
-    | [] -> () (* every variables are correctly set *)
-    | _  ->
-      let eval () =
-        let root =
-          if !OpamGlobals.root_dir <> OpamGlobals.default_opam_dir then
-            Printf.sprintf " --root=%s" !OpamGlobals.root_dir
+  | [] -> () (* every variables are correctly set *)
+  | _  ->
+    let eval () =
+      let root =
+        if !OpamGlobals.root_dir <> OpamGlobals.default_opam_dir then
+          Printf.sprintf " --root=%s" !OpamGlobals.root_dir
+        else
+          "" in
+      Printf.sprintf "eval `opam config env%s`\n" root in
+    let eval_string =
+      match user with
+      | None   -> eval ()
+      | Some u ->
+        let file = OpamPath.init t.root // init_file u.shell in
+        if not (OpamFilename.exists file) then
+          eval ()
+        else
+          source t (init_file u.shell) in
+    let profile_string = match user with
+      | None   -> ""
+      | Some u ->
+        match u.dot_profile with
+        | None             -> ""
+        | Some dot_profile ->
+          if dot_profile_needs_update t dot_profile = `yes then
+            Printf.sprintf "And add it to your %s.\n\n" (OpamFilename.prettify dot_profile)
           else
             "" in
-        Printf.sprintf "eval `opam config env%s`\n" root in
-      let eval_string =
-        match user with
-        | None   -> eval ()
-        | Some u ->
-          let file = OpamPath.init t.root // init_file u.shell in
-          if not (OpamFilename.exists file) then
-            eval ()
-          else
-            source t (init_file u.shell) in
-      let profile_string = match user with
-        | None   -> ""
-        | Some u ->
-          match u.dot_profile with
-          | None             -> ""
-          | Some dot_profile ->
-            if dot_profile_needs_update t dot_profile = `yes then
-              Printf.sprintf "And add it to your %s.\n\n" (OpamFilename.prettify dot_profile)
-            else
-              "" in
-      let line = "=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=" in
-      OpamGlobals.msg
-        "\n%s\n\
-         \n\
-         To complete the configuration of OPAM, you need to run:\n\
-         \n\
-        \    %s\n\
-         %s%s\n\n"
-        line eval_string profile_string line
+    let line = "=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=" in
+    OpamGlobals.msg
+      "\n%s\n\
+       \n\
+       To complete the configuration of OPAM, you need to run:\n\
+       \n\
+      \    %s\n\
+       %s%s\n\n"
+      line eval_string profile_string line
 
 (* Add the given packages to the set of package to reinstall. If [all]
    is set, this is done for ALL the switches (useful when a package
@@ -1375,55 +1396,55 @@ let install_compiler t ~quiet switch compiler =
 
   let comp = OpamFile.Comp.read comp_f in
   begin try
-    if not (OpamFile.Comp.preinstalled comp) then begin
+      if not (OpamFile.Comp.preinstalled comp) then begin
 
-      OpamGlobals.verbose := not quiet;
+        OpamGlobals.verbose := not quiet;
 
-      (* Install the compiler *)
-      let comp_src = match OpamFile.Comp.src comp with
-        | Some f -> f
-        | None   ->
-          OpamGlobals.error_and_exit
-            "No source for compiler %s"
-            (OpamCompiler.to_string compiler) in
-      let build_dir = OpamPath.Switch.build_ocaml t.root switch in
-      let comp_src_raw = OpamFilename.to_string comp_src in
-      if Sys.file_exists comp_src_raw && Sys.is_directory comp_src_raw then
-        OpamFilename.link_dir ~src:(OpamFilename.Dir.of_string comp_src_raw) ~dst:build_dir
-      else if Sys.file_exists comp_src_raw then
-        OpamFilename.extract comp_src build_dir
-      else OpamFilename.with_tmp_dir (fun download_dir ->
-        let file = OpamFilename.download ~overwrite:true comp_src download_dir in
-        OpamFilename.extract file build_dir;
-      );
-      let patches = OpamFile.Comp.patches comp in
-      let patches = List.map (fun f -> OpamFilename.download ~overwrite:true f build_dir) patches in
-      List.iter (fun f -> OpamFilename.patch f build_dir) patches;
-      if OpamFile.Comp.configure comp @ OpamFile.Comp.make comp <> [] then begin
-        OpamFilename.exec build_dir
-          [ ( "./configure" :: OpamFile.Comp.configure comp )
-            @ [ "-prefix";  OpamFilename.Dir.to_string switch_dir ]
-          (*-bindir %s/bin -libdir %s/lib -mandir %s/man*)
-          (* NOTE In case it exists 2 '-prefix', in general the script
-             ./configure will only consider the last one, others will be
-             discarded. *)
-          ; ( !OpamGlobals.makecmd () :: OpamFile.Comp.make comp )
-          ; [ !OpamGlobals.makecmd () ; "install" ]
-          ]
-      end else begin
-        let t = { t with switch } in
-        let builds = filter_commands t (OpamFile.Comp.build comp) in
-        OpamFilename.exec build_dir builds
+        (* Install the compiler *)
+        let comp_src = match OpamFile.Comp.src comp with
+          | Some f -> f
+          | None   ->
+            OpamGlobals.error_and_exit
+              "No source for compiler %s"
+              (OpamCompiler.to_string compiler) in
+        let build_dir = OpamPath.Switch.build_ocaml t.root switch in
+        let comp_src_raw = OpamFilename.to_string comp_src in
+        if Sys.file_exists comp_src_raw && Sys.is_directory comp_src_raw then
+          OpamFilename.link_dir ~src:(OpamFilename.Dir.of_string comp_src_raw) ~dst:build_dir
+        else if Sys.file_exists comp_src_raw then
+          OpamFilename.extract comp_src build_dir
+        else OpamFilename.with_tmp_dir (fun download_dir ->
+            let file = OpamFilename.download ~overwrite:true comp_src download_dir in
+            OpamFilename.extract file build_dir;
+          );
+        let patches = OpamFile.Comp.patches comp in
+        let patches = List.map (fun f -> OpamFilename.download ~overwrite:true f build_dir) patches in
+        List.iter (fun f -> OpamFilename.patch f build_dir) patches;
+        if OpamFile.Comp.configure comp @ OpamFile.Comp.make comp <> [] then begin
+          OpamFilename.exec build_dir
+            [ ( "./configure" :: OpamFile.Comp.configure comp )
+              @ [ "-prefix";  OpamFilename.Dir.to_string switch_dir ]
+            (*-bindir %s/bin -libdir %s/lib -mandir %s/man*)
+            (* NOTE In case it exists 2 '-prefix', in general the script
+               ./configure will only consider the last one, others will be
+               discarded. *)
+            ; ( !OpamGlobals.makecmd () :: OpamFile.Comp.make comp )
+            ; [ !OpamGlobals.makecmd () ; "install" ]
+            ]
+        end else begin
+          let t = { t with switch } in
+          let builds = filter_commands t (OpamFile.Comp.build comp) in
+          OpamFilename.exec build_dir builds
+        end;
       end;
-    end;
 
-    (* Update ~/.opam/aliases *)
-    add_switch t.root switch compiler
+      (* Update ~/.opam/aliases *)
+      add_switch t.root switch compiler
 
-  with e ->
-    if not !OpamGlobals.debug then
-      OpamFilename.rmdir switch_dir;
-    raise e
+    with e ->
+      if not !OpamGlobals.debug then
+        OpamFilename.rmdir switch_dir;
+      raise e
   end
 
 (* write the new version in the configuration file *)
@@ -1486,7 +1507,7 @@ let check f =
       if OpamFilename.exists_dir (OpamPath.root root) then
         f ()
       else
-       error ()
+        error ()
 
     | Switch_lock f ->
       (* Take a switch lock (and check that the global lock is free). *)
@@ -1494,8 +1515,9 @@ let check f =
         OpamFilename.with_flock
           (OpamPath.lock root)
           (fun () -> match !OpamGlobals.switch with
-          | None   -> OpamFile.Config.switch (OpamFile.Config.read (OpamPath.config root))
-          | Some a -> OpamSwitch.of_string a)
+            | `Command_line s
+            | `Env s   -> OpamSwitch.of_string s
+            | `Not_set -> OpamFile.Config.switch (OpamFile.Config.read (OpamPath.config root)))
           () in
       (* XXX: We can have a small race just here ... *)
       let t = load_state "switch-lock" in

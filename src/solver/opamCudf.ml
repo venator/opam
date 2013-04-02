@@ -77,9 +77,10 @@ module Graph = struct
     Algo.Defaultgraphs.PackageGraph.DotPrinter.output_graph fd g;
     close_out fd
 
-  (* Return the transitive closure of [pkgs] in [g], sorted in topological order *)
-  let closure g pkgs =
-    let g = PO.O.add_transitive_closure g in
+  let transitive_closure g =
+    PO.O.add_transitive_closure g
+
+  let close_and_linearize g pkgs =
     let _, l =
       Topo.fold
         (fun pkg (closure, topo) ->
@@ -100,7 +101,7 @@ end
 let filter_dependencies f_direction universe packages =
   let graph = f_direction (Graph.of_universe universe) in
   let packages = Set.of_list packages in
-  Graph.closure graph packages
+  Graph.close_and_linearize graph packages
 
 let dependencies = filter_dependencies (fun x -> x)
 
@@ -112,12 +113,15 @@ let string_of_atom (p, c) =
     | Some (r,v) -> Printf.sprintf " (%s %d)" (OpamFormula.string_of_relop r) v in
   Printf.sprintf "%s%s" p (const c)
 
+let string_of_vpkgs constr =
+  let constr = List.sort (fun (a,_) (b,_) -> String.compare a b) constr in
+  OpamFormula.string_of_conjunction string_of_atom constr
+
 let string_of_request r =
-  let to_string = OpamFormula.string_of_conjunction string_of_atom in
   Printf.sprintf "install:%s remove:%s upgrade:%s"
-    (to_string r.wish_install)
-    (to_string r.wish_remove)
-    (to_string r.wish_upgrade)
+    (string_of_vpkgs r.wish_install)
+    (string_of_vpkgs r.wish_remove)
+    (string_of_vpkgs r.wish_upgrade)
 
 let string_of_universe u =
   string_of_packages (List.sort compare (Cudf.get_packages u))
@@ -277,8 +281,8 @@ let dump_cudf_request (_, univ,_ as cudf) =
     incr solver_calls;
     let oc = open_out (Printf.sprintf "%s-%d.cudf" f !solver_calls) in
     begin match Lazy.force aspcud_path with
-    | None      -> Printf.fprintf oc "#internal OPAM solver\n"
-    | Some path -> Printf.fprintf oc "#!%s %s\n" (aspcud_command path) OpamGlobals.aspcud_criteria
+      | None      -> Printf.fprintf oc "#internal OPAM solver\n"
+      | Some path -> Printf.fprintf oc "#!%s %s\n" (aspcud_command path) OpamGlobals.aspcud_criteria
     end;
     Cudf_printer.pp_cudf oc cudf;
     close_out oc;
@@ -298,9 +302,32 @@ let default_preamble =
   ] in
   Common.CudfAdd.add_properties Cudf.default_preamble l
 
-let uninstall name universe =
+let remove universe name =
   let packages = Cudf.get_packages universe in
   let packages = List.filter (fun p -> p.Cudf.package <> name) packages in
+  Cudf.load_universe packages
+
+let uninstall_all universe =
+  let packages = Cudf.get_packages universe in
+  let packages = List.rev_map (fun p -> { p with Cudf.installed = false }) packages in
+  Cudf.load_universe packages
+
+let install universe package =
+  let p = Cudf.lookup_package universe (package.Cudf.package, package.Cudf.version) in
+  let p = { p with Cudf.installed = true } in
+  let packages =
+    let filter p =
+      p.Cudf.package <> package.Cudf.package
+      || p.Cudf.version <> package.Cudf.version in
+    Cudf.get_packages ~filter universe in
+  Cudf.load_universe (p :: packages)
+
+let remove_all_uninstalled_versions_but name constr universe =
+  let filter p =
+    p.Cudf.installed
+    || p.Cudf.package <> name
+    || Cudf.version_matches p.Cudf.version constr in
+  let packages = Cudf.get_packages ~filter universe in
   Cudf.load_universe packages
 
 let to_cudf univ req = (
@@ -321,18 +348,18 @@ let call_external_solver ~explain univ req =
     (* No external solver is available, use the default one *)
     Algo.Depsolver.check_request ~explain cudf_request
   | Some path ->
-  if Cudf.universe_size univ > 0 then begin
-    let cmd = aspcud_command path in
-    let criteria = OpamGlobals.aspcud_criteria in
-    Algo.Depsolver.check_request ~cmd ~criteria ~explain:true cudf_request
-  end else
-    Algo.Depsolver.Sat(None,Cudf.load_universe [])
+    if Cudf.universe_size univ > 0 then begin
+      let cmd = aspcud_command path in
+      let criteria = OpamGlobals.aspcud_criteria in
+      Algo.Depsolver.check_request ~cmd ~criteria ~explain:true cudf_request
+    end else
+      Algo.Depsolver.Sat(None,Cudf.load_universe [])
 
 (* Return the universe in which the system has to go *)
 let get_final_universe univ req =
   let open Algo.Depsolver in
   match call_external_solver ~explain:true univ req with
-  | Sat (_,u) -> Success (uninstall "dose-dummy-request" u)
+  | Sat (_,u) -> Success (remove u "dose-dummy-request")
   | Error str -> OpamGlobals.error_and_exit "solver error: %s" str
   | Unsat r   ->
     let open Algo.Diagnostic in
@@ -434,10 +461,10 @@ let solution_of_actions ~simple_universe ~complete_universe root_actions =
   (* Initial actions to process *)
   let actions =
     Map.of_list (OpamMisc.filter_map (function
-      | To_recompile pkg
-      | To_change (_, pkg) as act -> Some (pkg, act)
-      | To_delete _ -> None
-    ) root_actions) in
+        | To_recompile pkg
+        | To_change (_, pkg) as act -> Some (pkg, act)
+        | To_delete _ -> None
+      ) root_actions) in
 
   (* the graph of interesting packages, which might be impacted by the
      current actions *)
@@ -454,15 +481,15 @@ let solution_of_actions ~simple_universe ~complete_universe root_actions =
   let to_remove, root_causes =
     let remove_roots =
       Set.of_list (OpamMisc.filter_map (function
-        | To_delete pkg -> Some pkg
-        | _ -> None
-      ) root_actions) in
+          | To_delete pkg -> Some pkg
+          | _ -> None
+        ) root_actions) in
     (* we consider here only the simple universe (eg. hard
        dependencies only): we don't want to uninstall a package if
        some of its optional dependencies disapear, however we must
        recompile it (see below). *)
     let graph = create_graph (fun p -> Set.mem p remove_roots) simple_universe in
-    let to_remove = List.rev (Graph.closure graph remove_roots) in
+    let to_remove = List.rev (Graph.close_and_linearize graph remove_roots) in
     let root_causes =
       let graph = Graph.PO.O.add_transitive_closure graph in
       let cause pkg =
@@ -481,9 +508,9 @@ let solution_of_actions ~simple_universe ~complete_universe root_actions =
   let to_recompile =
     let recompile_roots =
       Set.of_list (OpamMisc.filter_map (function
-        | To_recompile pkg -> Some pkg
-        | _ -> None
-      ) root_actions) in
+          | To_recompile pkg -> Some pkg
+          | _ -> None
+        ) root_actions) in
     (* add the packages to recompile due to the REMOVAL of packages
        (ie. when an optional dependency has been removed). *)
     List.fold_left (fun to_recompile pkg ->
@@ -551,8 +578,8 @@ let solution_of_actions ~simple_universe ~complete_universe root_actions =
           | _  -> Use causes in
         (pkg, cause) :: root_causes
       | _, To_delete _ ->
-          (* the to_process graph should not contain remove actions. *)
-          assert false
+        (* the to_process graph should not contain remove actions. *)
+        assert false
     ) to_process root_causes in
 
   { ActionGraph.to_remove; to_process; root_causes }
