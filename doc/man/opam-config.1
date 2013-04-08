@@ -1,6 +1,6 @@
 .\" Pipe this output to groff -man -Tutf8 | less
 .\"
-.TH "OPAM-CONFIG" 1 "" "Opam 1.0.0" "Opam Manual"
+.TH "OPAM-CONFIG" 1 "" "Opam 1.0.1" "Opam Manual"
 .\" Disable hyphenantion and ragged-right
 .nh
 .ad l
@@ -23,9 +23,6 @@ Name of the sub\-command. See the \fBDOMAINS\fR section for more info.
 .TP 4
 \fB\-a\fR, \fB\-\-all\fR
 Enable all the global and user configuration options.
-.TP 4
-\fB\-\-csh\fR
-Use sh\-compatible mode for configuring OPAM.
 .TP 4
 \fB\-\-csh\fR
 Use csh\-compatible mode for configuring OPAM.
@@ -56,6 +53,9 @@ Modify ~/.profile (or ~/.zshrc if running zsh) to setup an OPAM\-friendly enviro
 .TP 4
 \fB\-R\fR, \fB\-\-rec\fR
 Recursive query.
+.TP 4
+\fB\-\-sh\fR
+Use sh\-compatible mode for configuring OPAM.
 .TP 4
 \fB\-u\fR, \fB\-\-user\fR
 Enable all the user configuration options.
