@@ -41,11 +41,14 @@ let confirm fmt =
 let read fmt =
   Printf.ksprintf (fun msg ->
     OpamGlobals.msg "%s %!" msg;
-    if not !OpamGlobals.yes then
-      match read_line () with
-      | "" -> None
-      | s  -> Some s
-    else
+    if not !OpamGlobals.yes then (
+      try match read_line () with
+        | "" -> None
+        | s  -> Some s
+      with _ ->
+        OpamGlobals.msg "\n";
+        None
+    ) else
       None
   ) fmt
 
@@ -540,9 +543,18 @@ type cache = OpamFile.OPAM.t package_map * OpamFile.Descr.t package_map
 
 let check_marshaled_file file =
   let ic = open_in_bin (OpamFilename.to_string file) in
+  let magic_len = String.length OpamVersion.magic in
+  let magic = String.create magic_len in
+  really_input ic magic 0 magic_len;
+  if magic <> OpamVersion.magic then (
+    close_in ic;
+    OpamSystem.internal_error
+      "Wrong magic string in the cache (actual:%s expected:%s)."
+      magic OpamVersion.magic;
+  );
   let header = String.create Marshal.header_size in
   really_input ic header 0 Marshal.header_size;
-  let expected_size = Marshal.total_size header 0 in
+  let expected_size = magic_len + Marshal.total_size header 0 in
   let current_size = in_channel_length ic in
   close_in ic;
   if not (expected_size = current_size) then (
@@ -554,6 +566,9 @@ let marshal_from_file file =
   try
     check_marshaled_file file;
     let ic = open_in_bin (OpamFilename.to_string file) in
+    let () =
+      let magic_len = String.length OpamVersion.magic in
+      really_input ic (String.create magic_len) 0 magic_len in
     let (opams, descrs: cache) = Marshal.from_channel ic in
     close_in ic;
     Some opams, Some descrs
@@ -574,6 +589,7 @@ let save_state ~update t =
       "Creating a cache of metadata in %s.\n"
       (OpamFilename.prettify file);
   let oc = open_out_bin (OpamFilename.to_string file) in
+  output_string oc OpamVersion.magic;
   Marshal.to_channel oc (t.opams, t.descrs) [];
   close_out oc;
   let t1 = Unix.gettimeofday () in
@@ -742,6 +758,8 @@ let source t ?(interactive_only=false) f =
     Printf.sprintf "if tty -s >/dev/null 2>&1; then\n  %sfi\n" s
   else s
 
+exception Variable_not_defined
+
 (* Return the contents of a fully qualified variable *)
 let contents_of_variable t v =
   let name = OpamVariable.Full.package v in
@@ -753,7 +771,8 @@ let contents_of_variable t v =
       | None   -> OpamFile.Dot_config.variable c var
       | Some s -> OpamFile.Dot_config.Section.variable c s var
     with Not_found ->
-      OpamGlobals.error_and_exit "%s is not defined" (OpamVariable.Full.to_string v) in
+      OpamGlobals.error "%s is not defined" (OpamVariable.Full.to_string v);
+      raise Variable_not_defined in
   if name = OpamPackage.Name.default then (
     try S (OpamMisc.getenv var_str)
     with Not_found ->
@@ -771,40 +790,52 @@ let contents_of_variable t v =
     let process_one name =
       let exists = find_packages_by_name t name <> None in
       let name_str = OpamPackage.Name.to_string name in
-      if not exists then
-        OpamPackage.unknown name None;
-      try Some (S (OpamMisc.getenv (name_str ^"_"^ var_str)))
-      with Not_found ->
-        let installed = mem_installed_package_by_name t name in
-        let no_section = OpamVariable.Full.section v = None in
-        if var = OpamVariable.enable && installed && no_section then
-          Some (S "enable")
-        else if var = OpamVariable.enable && not installed && no_section then
-          Some (S "disable")
-        else if var = OpamVariable.installed && no_section then
-          Some (B installed)
-        else if var = OpamVariable.installed || var = OpamVariable.enable then
-          OpamGlobals.error_and_exit
-            "Syntax error: invalid section argument in '%s'.\nUse '%s:%s' instead."
-            (OpamVariable.Full.to_string v)
-            name_str
-            (OpamVariable.to_string var)
-        else if not installed then
-          None
-        else
-          Some (read_var name) in
+      if not exists then None
+      else
+        try
+          let var_hook = Printf.sprintf "OPAM_%s_%s" name_str var_str in
+          match OpamMisc.getenv var_hook with
+          | "true"  -> Some (B true)
+          | "false" -> Some (B false)
+          | s       -> Some (S s)
+        with Not_found ->
+          let installed = mem_installed_package_by_name t name in
+          let no_section = OpamVariable.Full.section v = None in
+          if var = OpamVariable.enable && installed && no_section then
+            Some (S "enable")
+          else if var = OpamVariable.enable && not installed && no_section then
+            Some (S "disable")
+          else if var = OpamVariable.installed && no_section then
+            Some (B installed)
+          else if var = OpamVariable.installed || var = OpamVariable.enable then (
+            OpamGlobals.error
+              "Syntax error: invalid section argument in '%s'.\nUse '%s:%s' instead."
+              (OpamVariable.Full.to_string v)
+              name_str
+              (OpamVariable.to_string var);
+            raise Variable_not_defined
+          ) else if not installed then
+            None
+          else
+            Some (read_var name) in
     match process_one name with
     | Some r -> r
     | None   ->
       let name_str = OpamPackage.Name.to_string name in
       let names = OpamMisc.split name_str '+' in
-      if List.length names = 1 then
-        OpamGlobals.error_and_exit "Package %s is not installed" name_str;
+      begin match names with
+        | [name] -> OpamPackage.unknown (OpamPackage.Name.of_string name) None
+        | _      -> ()
+      end;
       let names = List.rev_map OpamPackage.Name.of_string names in
       let results =
         List.rev_map (fun name ->
           match process_one name with
-          | None   -> OpamGlobals.error_and_exit "Package %s is not installed" (OpamPackage.Name.to_string name)
+          | None   ->
+            OpamGlobals.error
+              "Package %s is not installed"
+              (OpamPackage.Name.to_string name);
+            raise Variable_not_defined
           | Some r -> r
         ) names in
       let rec compose x y = match x,y with
@@ -828,8 +859,7 @@ let contents_of_variable t v =
 
 let substitute_ident t i =
   let v = OpamVariable.Full.of_string i in
-  let c = contents_of_variable t v in
-  OpamVariable.string_of_variable_contents c
+  contents_of_variable t v
 
 (* Substitute the file contents *)
 let substitute_file t f =
@@ -843,40 +873,58 @@ let substitute_file t f =
 let substitute_string t s =
   OpamFile.Subst.replace_string s (contents_of_variable t)
 
-let rec eval_filter t = function
-  | FBool b    -> string_of_bool b
-  | FString s  -> substitute_string t s
-  | FIdent s   -> substitute_string t s
+exception Filter_type_error
+
+let filter_type_error f actual expected =
+  OpamGlobals.error
+    "\'%s\' has type %s, but a filter element of type %s was expected."
+    (string_of_filter f) actual expected;
+  raise Filter_type_error
+
+let string_of_variable_contents ident = function
+  | S s -> s
+  | B _ -> filter_type_error (FIdent ident) "bool" "string"
+
+let bool_of_variable_contents ident = function
+  | B b -> b
+  | S _ -> filter_type_error (FIdent ident) "string" "bool"
+
+let eval_string t = function
+  | FString s -> substitute_string t s
+  | FIdent s  -> string_of_variable_contents s (substitute_ident t s)
+  | f         -> filter_type_error f "bool" "string"
+
+let rec eval_bool t = function
+  | FBool b    -> b
+  | FString s  -> substitute_string t s = "true"
+  | FIdent s   -> bool_of_variable_contents s (substitute_ident t s)
   | FOp(e,s,f) ->
     (* We are supposed to compare version strings *)
     let s = match s with
-      | Eq  -> (=)
-      | Neq -> (<>)
+      | Eq  -> (fun a b -> Debian.Version.compare a b =  0)
+      | Neq -> (fun a b -> Debian.Version.compare a b <> 0)
       | Ge  -> (fun a b -> Debian.Version.compare a b >= 0)
       | Le  -> (fun a b -> Debian.Version.compare a b <= 0)
       | Gt  -> (fun a b -> Debian.Version.compare a b >  0)
       | Lt  -> (fun a b -> Debian.Version.compare a b <  0) in
-    let e = eval_filter t e in
-    let f = eval_filter t f in
-    if s e f then "true" else "false"
-  | FOr(e,f)  ->
-    if eval_filter t e = "true"
-    || eval_filter t f = "true"
-    then "true" else "false"
-  | FAnd(e,f) ->
-    if eval_filter t e = "true"
-    && eval_filter t f = "true"
-    then "true" else "false"
+    s (eval_string t e) (eval_string t f)
+  | FOr(e,f)  -> eval_bool t e || eval_bool t f
+  | FAnd(e,f) -> eval_bool t e && eval_bool t f
+  | FNot e    -> not (eval_bool t e)
 
 let eval_filter t = function
   | None   -> true
-  | Some f -> eval_filter t f = "true"
+  | Some f ->
+    try eval_bool t f
+    with _ -> false
 
 let filter_arg t (a,f) =
   if eval_filter t f then
-    match a with
-    | CString s -> Some (substitute_string t s)
-    | CIdent i  -> Some (substitute_ident t i)
+    try match a with
+      | CString s -> Some (substitute_string t s)
+      | CIdent i  -> Some (string_of_variable_contents i (substitute_ident t i))
+    with _ ->
+      None
   else
     None
 
@@ -1221,40 +1269,6 @@ let display_setup t shell dot_profile =
   OpamGlobals.msg "Global configuration:\n";
   List.iter print global_setup
 
-let update_setup_interactive t shell dot_profile =
-  let max = 4 in
-  let current = ref 1 in
-  let stats () =
-    let c = !current in
-    incr current;
-    Printf.sprintf "[%d/%d] " c max in
-  OpamGlobals.msg "\n=-=-=-= Configuring OPAM =-=-=-=\n";
-  if confirm "Do you want to update your configuration to use OPAM ?" then (
-    let dot_profile =
-      let file =
-        match
-          read "%sDo you want to update your shell configuration file ? [default: %s]"
-            (stats ())
-            (OpamFilename.prettify dot_profile)
-        with
-        | Some "y"
-        | Some "Y"
-        | None   -> dot_profile
-        | Some s -> OpamFilename.of_string s in
-      if not (OpamFilename.exists file)
-      && not (confirm "  %S does not exist, do you want to create it ?" (OpamFilename.to_string file)) then
-        None
-      else
-        Some file in
-    let ocamlinit = confirm "%sDo you want to update your ~/.ocamlinit ?" (stats ()) in
-    let complete = confirm "%sDo you want to install the auto-complete scripts ?" (stats ()) in
-    let switch_eval = confirm "%sDo you want to install the `opam-switch-eval` script ?" (stats ()) in
-
-    let user = Some { shell; ocamlinit; dot_profile } in
-    let global = Some { complete; switch_eval } in
-    update_setup t user global
-  )
-
 let print_env_warning t user =
   match
     List.filter
@@ -1264,41 +1278,80 @@ let print_env_warning t user =
   with
   | [] -> () (* every variables are correctly set *)
   | _  ->
-    let eval () =
+    let eval_string =
       let root =
         if !OpamGlobals.root_dir <> OpamGlobals.default_opam_dir then
           Printf.sprintf " --root=%s" !OpamGlobals.root_dir
         else
           "" in
       Printf.sprintf "eval `opam config env%s`\n" root in
-    let eval_string =
-      match user with
-      | None   -> eval ()
-      | Some u ->
-        let file = OpamPath.init t.root // init_file u.shell in
-        if not (OpamFilename.exists file) then
-          eval ()
-        else
-          source t (init_file u.shell) in
     let profile_string = match user with
       | None   -> ""
-      | Some u ->
-        match u.dot_profile with
-        | None             -> ""
-        | Some dot_profile ->
-          if dot_profile_needs_update t dot_profile = `yes then
-            Printf.sprintf "And add it to your %s.\n\n" (OpamFilename.prettify dot_profile)
-          else
-            "" in
-    let line = "=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=" in
+      | Some u -> match u.dot_profile with
+        | None -> ""
+        | Some f ->
+          let dot_profile =
+            Printf.sprintf " (for instance %s)" (OpamFilename.prettify f) in
+          Printf.sprintf
+            "2. To manually configure OPAM for subsequent usages, add the following \n\
+            \   line to your profile file%s:\n\
+             \n\
+            \      %s\n"
+            dot_profile
+            (source t (init_file u.shell)) in
+    let line =
+      "=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=\n"
+    in
     OpamGlobals.msg
       "\n%s\n\
+       1. To configure OPAM in the current shell session, you need to run:\n\
        \n\
-       To complete the configuration of OPAM, you need to run:\n\
-       \n\
-      \    %s\n\
-       %s%s\n\n"
+      \      %s\n\
+       %s%s\n"
       line eval_string profile_string line
+
+let update_setup_interactive t shell dot_profile =
+  let update dot_profile =
+    let user = Some { shell; ocamlinit = true; dot_profile = Some dot_profile } in
+    let global = Some { complete = true ; switch_eval = true } in
+    OpamGlobals.msg "\n";
+    update_setup t user global;
+    true in
+
+  OpamGlobals.msg "\n";
+
+  match read
+      "OPAM can configure your computer for optimal use.\n\
+      \n\
+       In order to do so, it will modify: \n\
+      \  - %s to set the right environment variables and to load the \n\
+      \    auto-completion scripts for your shell (%s) on startup.\n\
+      \  - ~/.ocamlinit to make non-root installations of `ocamlfind` (such as the \n\
+      \    ones done by OPAM) work when running the OCaml toplevel (eg. by adding \n\
+      \    $OCAML_TOPLEVEL_PATH to the list of include directories).\n\
+       \n\
+       If you choose to not configure your system now, you can either configure \n\
+       OPAM manually (more instructions on this later) or launch the automatic setup \n\
+       later by running:\n\
+       \n\
+      \    `opam config setup -a`.\n\
+       \n\
+       Do you want OPAM to modify your %s? (default is 'no', use 'f' to \n\
+       modify another file instead)\n\
+      \    [N/y/f]"
+      (OpamFilename.prettify dot_profile)
+      (string_of_shell shell)
+      (OpamFilename.prettify dot_profile)
+  with
+  | Some ("y" | "Y" | "yes"  | "YES" ) -> update dot_profile
+  | Some ("f" | "F" | "file" | "FILE") ->
+    begin match read "  Enter the name of the file to update:" with
+      | None   ->
+        OpamGlobals.msg "-- No filename: skipping the auto-configuration step --\n";
+        false
+      | Some f -> update (OpamFilename.of_string f)
+    end
+  | _ -> false
 
 (* Add the given packages to the set of package to reinstall. If [all]
    is set, this is done for ALL the switches (useful when a package

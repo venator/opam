@@ -103,8 +103,9 @@ src/core/opamVersion.ml:
 	@echo
 	@exit 1
 
-src/core/opamGitVersion.ml: src/core/opamVersion.ml
-	./shell/get-git-id.sh > $@
+.PHONY: src/core/opamGitVersion.ml
+src/core/opamGitVersion.ml:
+	ocaml shell/get-git-id.ml $@
 
 src/core/opamScript.ml: shell/ src/core/opamVersion.ml
 	ocaml shell/crunch.ml "complete"     < shell/opam_completion.sh > $@

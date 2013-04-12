@@ -25,7 +25,7 @@ type t = {
   p_info   : string option;
 }
 
-let open_flags =  [Unix.O_WRONLY; Unix.O_CREAT; Unix.O_TRUNC]
+let open_flags =  [Unix.O_WRONLY; Unix.O_CREAT; Unix.O_TRUNC; Unix.O_EXCL]
 
 let output_lines oc lines =
   List.iter (fun line ->
@@ -51,21 +51,15 @@ let make_info ?code ~cmd ~args ~cwd ~env_file ~stdout_file ~stderr_file () =
   let print_opt name = function
     | None   -> ()
     | Some s -> print name s in
-  let git_version = match OpamVersion.git with
-    | None   -> ""
-    | Some v -> Printf.sprintf " (%s)" (OpamVersion.to_string v) in
-  let opam_version =
-    Printf.sprintf "%s%s" (OpamVersion.to_string OpamVersion.current) git_version in
-  let os = OpamGlobals.os_string () in
 
-  print     "opam-version" opam_version;
-  print     "os" os;
-  print     "command" (String.concat " " (cmd :: args));
-  print     "path"   cwd;
-  print_opt "exit-code" (option_map string_of_int code);
-  print_opt "env-file" env_file;
-  print_opt "stdout-file" stdout_file;
-  print_opt "stderr-file" stderr_file;
+  print     "opam-version" (OpamVersion.to_string OpamVersion.full);
+  print     "os"           (OpamGlobals.os_string ());
+  print     "command"      (String.concat " " (cmd :: args));
+  print     "path"         cwd;
+  print_opt "exit-code"    (option_map string_of_int code);
+  print_opt "env-file"     env_file;
+  print_opt "stdout-file"  stdout_file;
+  print_opt "stderr-file"  stderr_file;
 
   Buffer.contents b
 

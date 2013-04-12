@@ -30,10 +30,9 @@ module API: sig
       regexps. *)
   val list:
     print_short:bool ->
-    installed_only:bool ->
-    installed_roots:bool ->
-    ?name_only:bool ->
-    ?case_sensitive:bool ->
+    filter:[`all|`installed|`roots|`installable] ->
+    exact_name:bool ->
+    case_sensitive:bool ->
     string list ->
     unit
 
@@ -133,7 +132,7 @@ module API: sig
     val reinstall: switch -> unit
 
     (** List the available compiler descriptions. *)
-    val list: print_short:bool -> installed_only:bool -> unit
+    val list: print_short:bool -> installed:bool -> unit
 
     (** Display the name of the current compiler. *)
     val show: unit -> unit

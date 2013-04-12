@@ -353,6 +353,9 @@ type config = {
 (** Shell compatibility modes *)
 type shell = [`csh|`zsh|`sh|`bash]
 
+(** Pretty-print *)
+val string_of_shell: shell -> string
+
 (** Global configuration option *)
 type global_config = {
   complete   : bool;
@@ -372,6 +375,9 @@ type user_config = {
 type symbol =
   | Eq | Neq | Le | Ge | Lt | Gt
 
+(** Pretty print *)
+val string_of_symbol: symbol -> string
+
 (** Filter *)
 type filter =
   | FBool of bool
@@ -380,6 +386,10 @@ type filter =
   | FOp of filter * symbol * filter
   | FAnd of filter * filter
   | FOr of filter * filter
+  | FNot of filter
+
+(** Pretty print *)
+val string_of_filter: filter -> string
 
 (** A command argument *)
 type simple_arg =

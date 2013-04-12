@@ -228,9 +228,10 @@ type item = {
   installed_version: version option;
   synopsis: string;
   descr: string;
+  tags: string list;
 }
 
-let names_of_regexp t ~installed_only ~name_only ~case_sensitive ~all regexps =
+let names_of_regexp t ~filter ~exact_name ~case_sensitive regexps =
   log "names_of_regexp regexps=%s" (OpamMisc.string_of_list (fun x -> x) regexps);
   let universe = OpamState.universe t Depends in
   (* the regexp can also simply be a package. *)
@@ -266,11 +267,11 @@ let names_of_regexp t ~installed_only ~name_only ~case_sensitive ~all regexps =
     List.exists (fun re -> OpamMisc.exact_match re str) regexps in
   let partial_match str =
     List.exists (fun re -> Re.execp re str) regexps in
-  let packages =
-    if all then
-      t.packages
-    else
-      OpamSolver.installable universe in
+  let partial_matchs strs =
+    List.exists partial_match strs in
+  let packages = match filter with
+    | `all -> t.packages
+    | _    -> OpamSolver.installable universe in
   let names =
     OpamPackage.Set.fold
       (fun nv set -> OpamPackage.Name.Set.add (OpamPackage.name nv) set)
@@ -299,21 +300,33 @@ let names_of_regexp t ~installed_only ~name_only ~case_sensitive ~all regexps =
       let descr_f = OpamPackage.Map.find nv t.descrs in
       let synopsis = OpamFile.Descr.synopsis descr_f in
       let descr = OpamFile.Descr.full descr_f in
+      let tags = OpamFile.OPAM.tags (OpamState.opam t nv) in
       OpamPackage.Name.Map.add
-        name { name; current_version; installed_version; synopsis; descr }
+        name { name; current_version; installed_version; synopsis; descr; tags }
         map
     ) names OpamPackage.Name.Map.empty in
 
   (* Filter the list of packages, depending on user predicates *)
   let names =
-    OpamPackage.Name.Map.filter (fun name { installed_version; synopsis; descr } ->
-      (not installed_only || installed_version <> None)                 (* installp *)
-      && (regexps = []                                                  (* allp     *)
-          || name_only && exact_match (OpamPackage.Name.to_string name) (* namep    *)
-          || not name_only                                              (* descrp   *)
-             && (partial_match (OpamPackage.Name.to_string name)
-                 || partial_match synopsis
-                 || partial_match descr))
+    OpamPackage.Name.Map.filter (fun name
+      { installed_version; synopsis; descr; tags } ->
+      (match filter with
+        | `installed -> installed_version <> None
+        | `roots     ->
+          begin match installed_version with
+            | None   -> false
+            | Some v -> OpamPackage.Set.mem (OpamPackage.create name v)
+                          t.installed_roots
+          end
+        | _  -> true)
+      &&
+      (regexps = []
+       || exact_match (OpamPackage.Name.to_string name)
+       || not exact_name &&
+          (partial_match (OpamPackage.Name.to_string name)
+           || partial_match synopsis
+           || partial_match descr
+           || partial_matchs tags))
     ) names in
 
   if not (OpamPackage.Set.is_empty t.packages)
@@ -324,23 +337,14 @@ let names_of_regexp t ~installed_only ~name_only ~case_sensitive ~all regexps =
 
 module API = struct
 
-  let list
-      ~print_short ~installed_only ~installed_roots
-      ?(name_only = true) ?(case_sensitive = false)
-      regexp =
+  let list ~print_short ~filter ~exact_name ~case_sensitive regexp =
     let t = OpamState.load_state "list" in
-    let names =
-      names_of_regexp t ~installed_only ~name_only ~case_sensitive ~all:false regexp in
-    let names =
-      if installed_roots then
-        OpamPackage.Name.Map.filter (fun name { current_version } ->
-          let nv = OpamPackage.create name current_version in
-          OpamPackage.Set.mem nv t.installed_roots
-        ) names
-      else
-        names in
+    let names =names_of_regexp t ~filter ~exact_name ~case_sensitive regexp in
     if not print_short && OpamPackage.Name.Map.cardinal names > 0 then (
-      let kind = if installed_only then "Installed" else "Available" in
+      let kind = match filter with
+        | `roots
+        | `installed -> "Installed"
+        | _          -> "Available" in
       OpamGlobals.msg "%s packages for %s:\n" kind (OpamSwitch.to_string t.switch);
     );
     let max_n, max_v =
@@ -373,12 +377,7 @@ module API = struct
   let info ~fields regexps =
     let t = OpamState.load_state "info" in
     let names =
-      names_of_regexp t
-        ~installed_only:false
-        ~name_only:true
-        ~case_sensitive:false
-        ~all:true
-        regexps in
+      names_of_regexp t ~filter:`all ~exact_name:true ~case_sensitive:false regexps in
 
     let show_fields = List.length fields <> 1 in
 
@@ -798,22 +797,26 @@ module API = struct
         let compiler_packages = OpamState.get_compiler_packages t compiler in
         let compiler_names =
           OpamPackage.Name.Set.of_list (List.rev_map fst compiler_packages) in
+        (* Ugly hack to quiet OPAM on base packages *)
+        OpamGlobals.display_messages := false;
         let _solution =
           OpamSolution.resolve_and_apply ~force:true t (Init compiler_names)
             { wish_install = [];
               wish_remove  = [];
               wish_upgrade = compiler_packages } in
+        OpamGlobals.display_messages := true;
 
         let dot_profile_o = Some dot_profile in
-        let user = Some { shell; ocamlinit = true; dot_profile = dot_profile_o } in
-        begin match update_config with
+        let user = { shell; ocamlinit = true; dot_profile = dot_profile_o } in
+        let updated = match update_config with
           | `ask -> OpamState.update_setup_interactive t shell dot_profile
-          | `no  -> ()
+          | `no  -> false
           | `yes ->
-            let global = Some { complete = true; switch_eval = true } in
-            OpamState.update_setup t user global
-        end;
-        OpamState.print_env_warning t user
+            let global = { complete = true; switch_eval = true } in
+            OpamState.update_setup t (Some user) (Some global);
+            true
+        in
+        OpamState.print_env_warning t (if updated then None else Some user)
 
       with e ->
         if not !OpamGlobals.debug then
@@ -1089,13 +1092,9 @@ module SafeAPI = struct
 
   let init = API.init
 
-  let list
-      ~print_short ~installed_only ~installed_roots
-      ?name_only ?case_sensitive pkg_str =
+  let list ~print_short ~filter ~exact_name ~case_sensitive pkg_str =
     read_lock (fun () ->
-      API.list
-        ~print_short ~installed_only ~installed_roots
-        ?name_only ?case_sensitive pkg_str
+      API.list ~print_short ~filter ~exact_name ~case_sensitive pkg_str
     )
 
   let info ~fields regexps =
@@ -1187,8 +1186,8 @@ module SafeAPI = struct
     let reinstall switch =
       global_lock (fun () -> API.SWITCH.reinstall switch)
 
-    let list ~print_short ~installed_only =
-      read_lock (fun () -> API.SWITCH.list ~print_short ~installed_only)
+    let list ~print_short ~installed =
+      read_lock (fun () -> API.SWITCH.list ~print_short ~installed)
 
     let show () =
       read_lock API.SWITCH.show
