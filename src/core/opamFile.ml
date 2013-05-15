@@ -939,7 +939,7 @@ module X = struct
         let aux (src, dst) =
           let src = String (string_of_optional src) in
           let dst = String (OpamFilename.to_string dst) in
-          Option (src, [dst]) in
+          List [src; dst] in
         OpamFormat.make_list aux in
       let mk =
         OpamFormat.make_list (string_of_optional |> OpamFormat.make_string) in
