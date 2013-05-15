@@ -296,6 +296,16 @@ module Dot_install: sig
 
   include IO_FILE
 
+  (** Create a dot install file with given fields *)
+  val create:
+      ?bin: (basename optional * basename option) list ->
+      ?lib: basename optional list ->
+      ?toplevel: basename optional list ->
+      ?share: basename optional list ->
+      ?doc: basename optional list ->
+      ?misc: (basename optional * filename) list ->
+      unit -> t
+
   (** List of files to install in $bin/ *)
   val bin:  t -> (basename optional * basename option) list
 

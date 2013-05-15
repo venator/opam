@@ -884,6 +884,11 @@ module X = struct
       doc      = [];
     }
 
+    let create
+        ?(bin = []) ?(lib = []) ?(toplevel = []) ?(share = [])
+        ?(doc = []) ?(misc = []) () =
+      { lib; bin; toplevel; misc; share; doc }
+
     let bin t = t.bin
     let lib t = t.lib
     let toplevel t = t.toplevel
