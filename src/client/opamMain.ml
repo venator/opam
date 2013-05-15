@@ -62,15 +62,16 @@ type build_options = {
   fake          : bool;
   external_tags : string list;
   jobs          : int option;
+  binary        : bool;
 }
 
 let create_build_options
     keep_build_dir make no_checksums build_test
     build_doc dryrun external_tags cudf_file fake
-    jobs = {
+    jobs binary = {
   keep_build_dir; make; no_checksums;
   build_test; build_doc; dryrun; external_tags;
-  cudf_file; fake; jobs
+  cudf_file; fake; jobs; binary
 }
 
 let set_build_options b =
@@ -82,6 +83,7 @@ let set_build_options b =
   OpamGlobals.external_tags  := b.external_tags;
   OpamGlobals.cudf_file      := b.cudf_file;
   OpamGlobals.fake           := b.fake;
+  OpamGlobals.binary         := b.binary;
   OpamGlobals.jobs           :=
     begin match b.jobs with
       | None   -> !OpamGlobals.jobs
@@ -338,11 +340,17 @@ let build_options =
       "Set the maximal number of concurrent jobs to use. You can also set it using \
        the OPAMJOBS environment variable."
       Arg.(some int) None in
+  let binary =
+    mk_flag ["c";"binary"]
+      "WARNING: early stage feature, expect bugs. \
+      Enable binary mode: try to find a suitable pre-compiled package and install it \
+      instead of building the sources. If it doesn't exist, build the package and \
+      create a pre-compiled package for later use." in
 
   Term.(pure create_build_options
     $keep_build_dir $make $no_checksums $build_test
     $build_doc $dryrun $external_tags $cudf_file $fake
-    $jobs)
+    $jobs $binary)
 
 let guess_repository_kind kind address =
   match kind with
