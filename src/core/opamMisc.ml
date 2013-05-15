@@ -364,9 +364,9 @@ let terminal_columns =
     then Lazy.force v
     else max_int
 
-let uname_s () =
+let uname opts () =
   try
-    with_process_in "uname -s"
+    with_process_in ("uname " ^ opts)
       (fun ic -> Some (strip (input_line ic)))
   with _ ->
     None
@@ -377,6 +377,11 @@ let shell_of_string = function
   | "zsh"  -> `zsh
   | "bash" -> `bash
   | _      -> `sh
+
+let uname_s = uname "--kernel-name"
+let uname_m = uname "--machine"
+
+(* TODO: implement ldd call and output parsing *)
 
 let guess_shell_compat () =
   try shell_of_string (Filename.basename (getenv "SHELL"))
