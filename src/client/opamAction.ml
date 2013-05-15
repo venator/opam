@@ -103,7 +103,9 @@ let install_package t nv =
       ) libraries_in_config;
 
       (* .install *)
-      OpamFile.Dot_install.write (OpamPath.Switch.install t.root t.switch name) install;
+      (* TODO: copy .install if available, instead of generating it ? or copy
+         it only in binary mode ? *)
+      (* OpamFile.Dot_install.write (OpamPath.Switch.install t.root t.switch name) install; *)
 
       (* .config *)
       OpamFile.Dot_config.write (OpamPath.Switch.config t.root t.switch name) config;
@@ -411,6 +413,8 @@ let remove_package_aux t ~metadata ~rm_build nv =
   )
 
 let remove_package t ~metadata ~rm_build nv =
+  (* TODO: use the generated .install file to uninstall a package, instead of
+     relying on uncontrollable ways of uninstalling *)
   if not !OpamGlobals.fake then
     remove_package_aux t ~metadata ~rm_build nv
 
@@ -441,10 +445,193 @@ let remove_all_packages t ~metadata sol =
   );
   deleted
 
+(* Look for a binary package corresponding to the given environment digest in
+   known repositories. *)
+(* TODO: use .ldd files to find an appropriate binary package *)
+let find_binary t nv env_id =
+  let binary_dir = OpamPath.Switch.binary_dir t.root t.switch nv env_id in
+  if not (OpamFilename.exists_dir binary_dir) then
+    raise Not_found;
+  let binary_files = OpamFilename.rec_files binary_dir in
+  let rec aux = function
+    | [] -> raise Not_found
+    | f :: r ->
+      if OpamFilename.check_suffix f ".tar.gz" then f
+      else aux r
+  in
+  aux binary_files
+
+(* Same as [find_binary], but returning an optional value
+   @return None if no binary package has been found *)
+let find_binary_opt t nv env_id =
+  try Some (find_binary t nv env_id) with Not_found -> None
+
+(* Compare two [OpamFilename.t] using their string representation *)
+let compare_filenames f1 f2 =
+  compare (OpamFilename.to_string f1) (OpamFilename.to_string f2)
+
+(* Map files to a list of (file, file_stats) pairs *)
+let map_stats files =
+  List.map (fun f -> f, Unix.lstat (OpamFilename.to_string f)) files
+
+(* Debug function used to print the list of installed files *)
+(*
+let print_diff (removed_files, installed_files, modified_files) =
+    let print_filenames header files =
+      Printf.printf "\n===== %s =====\n" header;
+      if List.length files > 0 then
+        List.iter (fun f -> print_endline (OpamFilename.to_string f)) files
+      else
+        print_endline "None"
+    in
+
+    print_filenames "Removed files" removed_files;
+    print_filenames "Installed files" installed_files;
+    print_filenames "Modified files" modified_files
+*)
+
+(* Create a binary package, that is to say a .tar.gz archive containing all
+   the files installed by OPAM for a given package *)
+let archive_package t nv env_id bin_id installed_files =
+  (* Make binary package filename *)
+  let binary_file = OpamPath.Switch.binary t.root t.switch nv env_id bin_id in
+  let filename = OpamFilename.to_string binary_file in
+
+  OpamGlobals.msg "Creating package %s.\n" filename;
+
+  (* Create the binary package directory *)
+  let binary_dir = OpamPath.Switch.binary_dir t.root t.switch nv env_id in
+
+  if not (OpamFilename.exists_dir binary_dir) then
+    OpamFilename.mkdir binary_dir;
+
+  (* Archive pathes from the switch root dir *)
+  let prefix = OpamPath.Switch.root t.root t.switch in
+  let files = List.map (fun f -> OpamFilename.remove_prefix prefix f)
+      installed_files
+  in
+
+  (* Archive the files in a package *)
+  match files with
+  | [] -> OpamGlobals.error "No new file installed, unable to create package"
+  | _ -> OpamSystem.archive filename files (OpamFilename.Dir.to_string prefix)
+
+(* Difference of two list of pairs (file, stats), sorted by [file]
+   @return (removed_files * installed_files * modified_files) *)
+let diff_filetrees l1 l2 =
+  let rec aux rems insts mods r1 r2 = match r1, r2 with
+    | (f1, st1) :: t1, (f2, st2) :: t2 ->
+      let eq_stats =
+        st1.Unix.st_mtime = st2.Unix.st_mtime
+          && st1.Unix.st_ino = st2.Unix.st_ino
+      in
+      let cmp_filename = compare_filenames f1 f2 in
+      (* A new file has been installed *)
+      if cmp_filename > 0 then aux rems (f2 :: insts) mods r1 t2
+      (* A file has been removed *)
+      else if cmp_filename < 0 then aux (f1 :: rems) insts mods t1 r2
+      (* File has been modified *)
+      else if not eq_stats then aux rems insts (f2 :: mods) t1 t2
+      (* No change *)
+      else aux rems insts mods t1 t2
+    (* End of lists *)
+    | [], [] -> List.rev rems, List.rev insts, List.rev mods
+    (* Leftover files *)
+    | [], (f, _) :: r -> aux rems (f :: insts) mods r1 r
+    | (f, _) :: r, [] -> aux (f :: rems) insts mods r r2
+  in
+  aux [] [] [] l1 l2
+
+(* Difference of two lists of elements which can be sorted with [compare] *)
+let diff_list compare l1 l2 =
+  let rec aux acc r1 r2 = match r1, r2 with
+    | [], [] -> List.rev acc
+    | [], r | r, []  -> List.rev ((List.rev r) @ acc)
+    | h1 :: t1, h2 :: t2 ->
+      if compare h1 h2 > 0 then aux (h2 :: acc) r1 t2
+      else if compare h1 h2 < 0 then aux (h1 :: acc) t1 r2
+      else aux acc t1 t2
+  in
+  let sort = List.fast_sort compare in
+  aux [] (sort l1) (sort l2)
+
+(* List files in directories listed in [dirs] (prefixed by the root
+   directory. If [dirs] is not defined, list files in the root directory *)
+let list_files_sorted ?dirs t =
+  let open OpamFilename.OP in
+  let root_dir = OpamPath.Switch.root t.root t.switch in
+  let dirs = match dirs with
+    | None -> [ ("", root_dir) ]
+    | Some ds -> ds
+  in
+  List.fast_sort compare_filenames
+    (List.fold_left (fun acc (_, d) -> acc @ OpamFilename.rec_files d) [] dirs)
+
+(* Sort a list of files by their prefix directory. If the prefix directory is 
+   not in the given [dirs] list, the file is added to the leftover file list.
+   @return ((directory * files) * leftover files) *)
+let sort_files_in_dirs ?(dirs = []) files =
+  let acc_opt (id, _) l acc =
+    if List.length l > 0 then (id, l) :: acc else acc
+  in
+  let rec aux acc acc_files acc_misc ds fs =
+    match ds, fs with
+    | [], _ -> acc_files, ((List.rev fs) @ acc_misc)
+    | d :: _, [] -> acc_opt d acc acc_files, acc_misc
+    | (id, d) :: dt, f :: ft ->
+      if OpamFilename.starts_with d f then
+        aux (f :: acc) acc_files acc_misc ds ft
+      else if (OpamFilename.to_string f) > (OpamFilename.Dir.to_string d) then
+        aux [] (acc_opt (id, d) acc acc_files) acc_misc dt fs
+      else aux acc acc_files (f :: acc_misc) ds ft
+  in
+  aux [] [] [] dirs files
+
+(* Create a [OpamFile.Dot_install.t] using files sorted by their prefix
+   directory, as returned by [sort_files_in_dirs]. *)
+let dot_install_of_files (file_in_dirs, misc_files) =
+  let str_of_filenames = List.map OpamFilename.to_string in
+  let file_in_dirs_str =
+    List.map (fun (s, fs) -> s, str_of_filenames fs) file_in_dirs
+  in
+  let misc_files_str = str_of_filenames misc_files in
+  let assoc dir =
+    try List.assoc dir file_in_dirs_str with Not_found -> []
+  in
+  let to_basename f = {optional = false; c = OpamFilename.Base.of_string f} in
+  let to_basename_bin f = (to_basename f, None) in
+  let to_basename_misc f = (to_basename f, OpamFilename.of_string f) in
+  OpamFile.Dot_install.create
+      ~bin: (List.map to_basename_bin (assoc "bin"))
+      ~lib: (List.map to_basename (assoc "lib"))
+      ~toplevel: (List.map to_basename (assoc "toplevel"))
+      ~share: (List.map to_basename (assoc "share"))
+      ~doc: (List.map to_basename (assoc "doc"))
+      ~misc: (List.map to_basename_misc misc_files_str)
+      ()
+
+(* Write an [OpamFile.Dot_install.t] to a file *)
+let write_dot_install t nv dot_install =
+  let name = OpamPackage.name nv in
+  OpamFile.Dot_install.write
+      (OpamPath.Switch.install t.root t.switch name) dot_install
+
+(* A list associating install directories to their absolute path in the current
+   OPAM switch. *)
+let install_dirs t nv =
+  let n = OpamPackage.name nv in
+  [
+    ("bin", OpamPath.Switch.bin t.root t.switch);
+    ("lib", OpamPath.Switch.lib t.root t.switch n);
+    ("toplevel", OpamPath.Switch.toplevel t.root t.switch);
+    ("share", OpamPath.Switch.share t.root t.switch n);
+    ("doc", OpamPath.Switch.doc t.root t.switch n)
+  ]
+
 (* Build and install a package. In case of error, simply return the
    error traces, and let the repo in a state that the user can
    explore.  Do not try to recover yet. *)
-let build_and_install_package_aux t ~metadata nv =
+let build_and_install_package_aux t ~metadata nv repo_root =
   let left, right = match !OpamGlobals.utf8_msgs with
     | true -> "\xF0\x9F\x90\xAB " (* UTF-8 <U+1F42B, U+0020> *), ""
     | false -> "=-=-=", "=-=-="
@@ -458,32 +645,82 @@ let build_and_install_package_aux t ~metadata nv =
 
   try
 
-    (* This one can raises an exception (for insance an user's CTRL-C
-       when the sync takes too long. *)
-    let p_build = extract_package t nv in
+    let env_checksum, binary_package_opt =
+      if !OpamGlobals.binary then
+        let checksum =
+          OpamBinary.Digest.environment t.root t.switch repo_root nv
+        in
+        checksum, find_binary_opt t nv checksum
+      else
+        "", None
+    in
 
-    (* Exec the given commands. *)
-    let exec name f =
-      match OpamState.filter_commands t (f opam) with
-      | []       -> ()
-      | commands ->
-        OpamGlobals.msg "%s:\n%s\n" name (string_of_commands commands);
-        let name = OpamPackage.Name.to_string (OpamPackage.name nv) in
-        OpamFilename.exec ~env ~name p_build commands in
+    match binary_package_opt with
+    (* A binary package has been found *)
+    | Some bin_pkg ->
+      let bin_pkg_str = OpamFilename.to_string bin_pkg in
+      OpamGlobals.msg "Extracting binary package.\n";
+      OpamSystem.extract_in bin_pkg_str
+        (OpamFilename.Dir.to_string (OpamPath.Switch.root t.root t.switch))
 
-    (* First, we build the package. *)
-    exec ("Building " ^ OpamPackage.to_string nv) OpamFile.OPAM.build;
+    (* No binary package has been found, build it *)
+    | None -> (
 
-    (* If necessary, build and run the test. *)
-    if !OpamGlobals.build_test then
-      exec "Building and running the test" OpamFile.OPAM.build_test;
+      let dirs, init_filetree =
+        if !OpamGlobals.binary then
+          install_dirs t nv, map_stats (list_files_sorted t)
+        else
+          [], []
+      in
 
-    (* If necessary, build the documentation. *)
-    if !OpamGlobals.build_doc then
-      exec "Generating the documentation" OpamFile.OPAM.build_doc;
+      (* This one can raises an exception (for insance an user's CTRL-C
+         when the sync takes too long. *)
+      let p_build = extract_package t nv in
 
-    (* If everyting went fine, finally install the package. *)
-    install_package t nv;
+      (* Exec the given commands. *)
+      let exec name f =
+        match OpamState.filter_commands t (f opam) with
+        | []       -> ()
+        | commands ->
+          OpamGlobals.msg "%s:\n%s\n" name (string_of_commands commands);
+          let name = OpamPackage.Name.to_string (OpamPackage.name nv) in
+          OpamFilename.exec ~env ~name p_build commands in
+
+      (* First, we build the package. *)
+      exec ("Building " ^ OpamPackage.to_string nv) OpamFile.OPAM.build;
+
+      (* If necessary, build and run the test. *)
+      if !OpamGlobals.build_test then
+        exec "Building and running the test" OpamFile.OPAM.build_test;
+
+      (* If necessary, build the documentation. *)
+      if !OpamGlobals.build_doc then
+        exec "Generating the documentation" OpamFile.OPAM.build_doc;
+
+      (* If everyting went fine, finally install the package. *)
+      install_package t nv;
+
+      if !OpamGlobals.binary then
+        (* New list of files in the installation dir. *)
+        let new_filetree = map_stats (list_files_sorted t) in
+        (* let new_filetree = map_stats (list_files ~dirs sorted t) in *)
+
+        (* Find removed, installed and modified files. *)
+        let (_, installed_files, _) =
+          diff_filetrees init_filetree new_filetree
+        in
+
+        (* Create a .install containing installed files. *)
+        let dot_install_files = sort_files_in_dirs ~dirs installed_files in
+        let install = dot_install_of_files dot_install_files in
+        write_dot_install t nv install;
+
+        (* Create a binary package. *)
+        let bin_checksum =
+          OpamBinary.Digest.binary t.root t.switch repo_root nv
+        in
+        archive_package t nv env_checksum bin_checksum installed_files
+    );
 
     (* update the metadata *)
     if metadata then (
@@ -504,72 +741,14 @@ let build_and_install_package_aux t ~metadata nv =
     remove_package ~rm_build:false ~metadata:false t nv;
     raise e
 
-let compare_filenames f1 f2 =
-  compare (OpamFilename.to_string f1) (OpamFilename.to_string f2)
-
-(* Recursively list files in the current state prefix directory *)
-let list_switch_root t =
-  let root = OpamPath.Switch.root t.root t.switch in
-  List.fast_sort compare_filenames (OpamFilename.list_files root)
-
-(* Map files to a list of (file, file_mtime) pairs *)
-let map_mtime files =
-  List.map (fun f ->
-      f, (Unix.lstat (OpamFilename.to_string f)).Unix.st_mtime) files
-
-(* Difference of two list of pairs (file, mtime), sorted by [file]
-   @return (removed_files * modified_files * installed_files) *)
-let diff_filetrees l1 l2 =
-  let rec aux rems insts mods r1 r2 = match r1, r2 with
-    | h1 :: t1, h2 :: t2 ->
-      let cmp_mtime = compare (snd h1) (snd h2) in
-      let cmp_filename = compare_filenames (fst h1) (fst h2) in
-      (* A new file has been installed *)
-      if cmp_filename > 0 then aux rems (h2 :: insts) mods r1 t2
-      (* A file has been removed *)
-      else if cmp_filename < 0 then aux (h1 :: rems) insts mods t1 r2
-      (* File has been modified *)
-      else if cmp_mtime < 0 then aux rems insts (h2 :: mods) t1 t2
-      (* File became younger !?! *)
-      else if cmp_mtime > 0 then aux rems insts (h1 :: mods) t1 t2
-      (* No change *)
-      else aux rems insts mods t1 t2
-    (* Leftover files *)
-    | [], [] -> List.rev rems, List.rev insts, List.rev mods
-    | [], r2 -> List.rev rems, List.rev (r2 @ insts), List.rev mods
-    | r1, [] -> List.rev (r1 @ rems), List.rev insts, List.rev mods
-  in
-  aux [] [] [] l1 l2
-
-let archive_package t nv (removed_files, installed_files, modified_files) =
-    let print_filenames header files =
-      let filenames, _ = List.split files in
-      Printf.printf "\n===== %s =====\n" header;
-      if List.length filenames > 0 then
-        List.iter (fun f -> print_endline (OpamFilename.to_string f)) filenames
-      else
-        print_endline "None"
-    in
-
-    print_filenames "Removed files" removed_files;
-    print_filenames "Installed files" installed_files;
-    print_filenames "Modified files" modified_files;
-
-    print_endline "\nCreating binary package...";
-
-    let prefix = OpamPath.Switch.root t.root t.switch in
-    let files = List.map (fun (f, _) ->
-        OpamFilename.remove_prefix ~prefix f) installed_files
-    in
-    OpamSystem.archive (OpamFilename.to_string (OpamPath.archive_bin t.root nv))
-      files (OpamFilename.Dir.to_string prefix)
-
 let build_and_install_package t ~metadata nv =
   if not !OpamGlobals.fake then
-    let init_filetree = map_mtime (list_switch_root t) in
-    (* Proceed to build and install *)
-    build_and_install_package_aux t ~metadata nv;
-    (* Create a binary package (archive of installed files) *)
-    let new_filetree = map_mtime (list_switch_root t) in
-    let changes = diff_filetrees init_filetree new_filetree in
-    archive_package t nv changes
+    (* Find the root path of the repository containg [nv]. *)
+    let repo_root =
+      try Some (OpamState.with_repository t nv (fun p _ -> p))
+      with _ -> None in
+    match repo_root with
+    | None -> ()
+    | Some p ->
+      (* Proceed to build and install *)
+      build_and_install_package_aux t ~metadata nv p
