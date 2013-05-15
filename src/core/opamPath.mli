@@ -59,9 +59,6 @@ val descr: t -> package -> filename
 (** Archives files: {i $opam/archives/$NAME.$VERSION.tar.gz} *)
 val archive: t -> package -> filename
 
-(** Binary archives files {i $opam/archives/$NAME.$VERSION+checksum.tar.gz} *)
-val archive_bin: t -> package -> filename
-
 (** OPAM files folder: {i $opam/opam/} *)
 val opam_dir: t -> dirname
 
@@ -174,6 +171,14 @@ module Switch: sig
 
   (** Build dir for a given pinned package *)
   val pinned_dir: t -> switch -> name -> dirname
+
+  (** Binary packages directory
+      {i $opam/$OVERSION/binaries/$NAME.$VERSION/$ENV_CHECKSUM/} *)
+  val binary_dir: t -> switch -> package -> string -> dirname
+
+  (** Binary package
+      {i $opam/$OVERSION/binaries/$NAME.$VERSION/$ENV_CHECKSUM/$NAME.$VERSION+$ENV_CHECKSUM+BIN_CHECKSUM.tar.gz} *)
+  val binary: t -> switch -> package -> string -> string -> filename
 
 end
 

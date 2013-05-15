@@ -50,8 +50,6 @@ let archives_dir t = t / "archives"
 
 let archive t nv = archives_dir t // (OpamPackage.to_string nv ^ "+opam.tar.gz")
 
-let archive_bin t nv = archives_dir t // (OpamPackage.to_string nv ^ "+opam+bin.tar.gz")
-
 let repo_index t = t / "repo" // "index"
 
 let init  t = t / "opam-init"
@@ -114,6 +112,22 @@ module Switch = struct
   let pinned_cache t a = root t a / "pinned.cache"
 
   let pinned_dir t a n = pinned_cache t a / OpamPackage.Name.to_string n
+
+  let binaries_dir t a = root t a / "binaries"
+
+  let shorten_id id = String.sub id 0 7
+
+  let binary_dir t a nv env_id =
+    let package = OpamPackage.to_string nv in
+    let short_id = shorten_id env_id in
+    binaries_dir t a / package / short_id
+
+  let binary t a nv env_id bin_id =
+    let package = OpamPackage.to_string nv in
+    let env_id = shorten_id env_id in
+    let bin_id = shorten_id bin_id in
+    binary_dir t a nv env_id // (package ^ (
+      "+opam+" ^ env_id ^ "+" ^ bin_id ^ ".tar.gz"))
 
 end
 
