@@ -85,7 +85,7 @@ module Digest = struct
       | None -> ""
       | Some m -> m
     in
-    let source = os ^ machine in
+    let source = os ^ machine ^ Sys.ocaml_version in
     of_string source
 
   (* Create a digest of a compiled package *)
