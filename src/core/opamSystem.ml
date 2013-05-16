@@ -465,6 +465,21 @@ let ocaml_version = lazy (
   | None    -> None
 )
 
+(* Call 'ocamlc -config' and parse the output in an association list of
+   retrieved fields and their values. *)
+let ocamlc_config () =
+  let lines = read_command_output ["ocamlc"; "-config"] in
+  let rec aux acc = function
+    | [] -> acc
+    | hd :: tl ->
+      match OpamMisc.cut_at hd ':' with
+      | None -> aux acc tl
+      | Some (f, raw_v) ->
+        let v = String.sub raw_v 1 (String.length raw_v - 1) in
+        aux ((f, v) :: acc) tl
+  in
+  aux [] lines
+
 (* Reset the path to get the system compiler *)
 let system command = lazy (
   let env = Lazy.force reset_env in

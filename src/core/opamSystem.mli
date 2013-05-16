@@ -87,6 +87,10 @@ val rec_dirs: string -> string list
     compiler is present in the path, then it returns [None]. *)
 val ocaml_version: string option Lazy.t
 
+(** Return an association list of fields given by the command
+    'ocamlc -config' *)
+val ocamlc_config: unit -> (string * string) list
+
 (** Return the path where the system ocamlc library is installed *)
 val system_ocamlc_where: string option Lazy.t
 

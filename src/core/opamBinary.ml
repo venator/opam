@@ -96,12 +96,11 @@ module Digest = struct
 
   (* The initial digest used to find an OCaml binary package *)
   let system () =
+    let system_config = OpamSystem.ocamlc_config () in
     let os = OpamGlobals.string_of_os (OpamGlobals.os ()) in
-    let machine = match OpamMisc.uname_m () with
-      | None -> ""
-      | Some m -> m
-    in
-    let source = os ^ machine ^ Sys.ocaml_version in
+    let machine = List.assoc "architecture" system_config in
+    let version = List.assoc "version" system_config in
+    let source = os ^ machine ^ version in
     of_string source
 
   (* Create a digest of a compiled package *)
