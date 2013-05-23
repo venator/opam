@@ -491,7 +491,7 @@ let remove_all_packages t ~metadata sol =
    known repositories. *)
 (* TODO: use .ldd files to find an appropriate binary package *)
 let find_binary t nv env_id =
-  let binary_dir = OpamPath.Switch.binary_dir t.root t.switch nv env_id in
+  let binary_dir = OpamPath.binary_dir t.root nv env_id in
   if not (OpamFilename.exists_dir binary_dir) then
     raise Not_found;
   let binary_files = OpamFilename.rec_files binary_dir in
@@ -536,13 +536,13 @@ let print_diff (removed_files, installed_files, modified_files) =
    the files installed by OPAM for a given package *)
 let archive_package t nv env_id bin_id installed_files =
   (* Make binary package filename *)
-  let binary_file = OpamPath.Switch.binary t.root t.switch nv env_id bin_id in
+  let binary_file = OpamPath.binary t.root nv env_id bin_id in
   let filename = OpamFilename.to_string binary_file in
 
   OpamGlobals.msg "Creating package %s.\n" filename;
 
   (* Create the binary package directory *)
-  let binary_dir = OpamPath.Switch.binary_dir t.root t.switch nv env_id in
+  let binary_dir = OpamPath.binary_dir t.root nv env_id in
 
   if not (OpamFilename.exists_dir binary_dir) then
     OpamFilename.mkdir binary_dir;
