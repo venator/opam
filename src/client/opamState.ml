@@ -73,6 +73,7 @@ type state = {
   installed: OpamFile.Installed.t;
   installed_roots: OpamFile.Installed_roots.t;
   reinstall: OpamFile.Reinstall.t;
+  installed_binaries: OpamFile.Installed_binaries.t;
   config: OpamFile.Config.t;
   package_index: repository_name package_map;
   compiler_index: repository_name compiler_map;
@@ -108,7 +109,9 @@ let print_state t =
   log "PACKAGES  : %s" packages;
   log "INSTALLED : %s" (OpamPackage.Set.to_string t.installed);
   log "ROOTS     : %s" (OpamPackage.Set.to_string t.installed_roots);
-  log "REINSTALL : %s" (OpamPackage.Set.to_string t.reinstall)
+  log "REINSTALL : %s" (OpamPackage.Set.to_string t.reinstall);
+  log "BINARIES  : %s" (OpamPackage.Name.Map.to_string
+      (fun c -> c) t.installed_binaries)
 
 let opam t nv =
   try OpamPackage.Map.find nv t.opams
@@ -420,13 +423,15 @@ let load_repository_state call_site =
   let installed = OpamPackage.Set.empty in
   let installed_roots = OpamPackage.Set.empty in
   let reinstall = OpamPackage.Set.empty in
+  let installed_binaries = OpamPackage.Name.Map.empty in
   let package_index = OpamPackage.Map.empty in
   let compiler_index = OpamCompiler.Map.empty in
   let pinned = OpamPackage.Name.Map.empty in
   {
     partial; root; switch; compiler; compiler_version; repositories; opams; descrs;
     packages; available_packages; installed; installed_roots; reinstall;
-    config; aliases; pinned; prefixes; compilers; package_index; compiler_index;
+    installed_binaries; config; aliases; pinned; prefixes; compilers;
+    package_index; compiler_index;
   }
 
 (* load partial state to be able to read env variables *)
@@ -460,13 +465,15 @@ let load_env_state call_site =
   let installed = OpamPackage.Set.empty in
   let installed_roots = OpamPackage.Set.empty in
   let reinstall = OpamPackage.Set.empty in
+  let installed_binaries = OpamPackage.Name.Map.empty in
   let package_index = OpamPackage.Map.empty in
   let compiler_index = OpamCompiler.Map.empty in
   let pinned = OpamPackage.Name.Map.empty in
   {
     partial; root; switch; compiler; compiler_version; repositories; opams; descrs;
     packages; available_packages; installed; installed_roots; reinstall;
-    config; aliases; pinned; prefixes; compilers; package_index; compiler_index;
+    installed_binaries; config; aliases; pinned; prefixes; compilers;
+    package_index; compiler_index;
   }
 
 let get_compiler_packages t comp =
@@ -804,6 +811,8 @@ let load_state ?(save_cache=true) call_site =
     OpamFile.Installed_roots.safe_read (OpamPath.Switch.installed_roots root switch) in
   let reinstall =
     OpamFile.Reinstall.safe_read (OpamPath.Switch.reinstall root switch) in
+  let installed_binaries =
+    OpamFile.Installed_binaries.safe_read (OpamPath.Switch.installed_binaries root switch) in
   let packages =
     OpamPackage.Set.of_list (OpamPackage.Map.keys opams) in
   let system =
@@ -816,7 +825,8 @@ let load_state ?(save_cache=true) call_site =
   let t = {
     partial; root; switch; compiler; compiler_version; repositories; opams; descrs;
     packages; available_packages; installed; installed_roots; reinstall;
-    config; aliases; pinned; prefixes; compilers; package_index; compiler_index;
+    installed_binaries; config; aliases; pinned; prefixes; compilers;
+    package_index; compiler_index;
   } in
   print_state t;
   if save_cache && not cached then
@@ -1755,6 +1765,7 @@ module Types = struct
     installed: OpamFile.Installed.t;
     installed_roots: OpamFile.Installed_roots.t;
     reinstall: OpamFile.Reinstall.t;
+    installed_binaries: OpamFile.Installed_binaries.t;
     config: OpamFile.Config.t;
     package_index: repository_name package_map;
     compiler_index: repository_name compiler_map;

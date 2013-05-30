@@ -205,9 +205,10 @@ let recover_from_error = function
 
 (* Transient state (not flushed to disk) *)
 type state = {
-  mutable s_installed      : package_set;
-  mutable s_installed_roots: package_set;
-  mutable s_reinstall      : package_set;
+  mutable s_installed         : package_set;
+  mutable s_installed_roots   : package_set;
+  mutable s_reinstall         : package_set;
+  mutable s_installed_binaries: string name_map;
 }
 
 (* Mean function for applying solver solutions. One main process is
@@ -217,15 +218,17 @@ type state = {
 let parallel_apply t action solution =
   let open PackageActionGraph in
   let state = {
-    s_installed       = t.installed;
-    s_installed_roots = t.installed_roots;
-    s_reinstall       = t.reinstall;
+    s_installed          = t.installed;
+    s_installed_roots    = t.installed_roots;
+    s_reinstall          = t.reinstall;
+    s_installed_binaries = t.installed_binaries;
   } in
   let update_state () =
-    let installed       = state.s_installed in
-    let installed_roots = state.s_installed_roots in
-    let reinstall       = state.s_reinstall in
-    OpamAction.update_metadata t ~installed ~installed_roots ~reinstall in
+    let installed          = state.s_installed in
+    let installed_roots    = state.s_installed_roots in
+    let reinstall          = state.s_reinstall in
+    let installed_binaries = state.s_installed_binaries in
+    OpamAction.update_metadata t ~installed ~installed_roots ~reinstall ~installed_binaries in
 
   let root_installs =
     let names =
@@ -249,12 +252,23 @@ let parallel_apply t action solution =
     state.s_reinstall <- OpamPackage.Set.remove nv state.s_reinstall;
     if OpamPackage.Name.Set.mem (OpamPackage.name nv) root_installs then
       state.s_installed_roots <- OpamPackage.Set.add nv state.s_installed_roots;
+    if !OpamGlobals.binary then (
+      match OpamState.package_repository_state t nv with
+      | None -> ()
+      | Some pkg_state ->
+        let bin_checksum = OpamBinary.Digest.binary t.root t.switch
+            pkg_state.pkg_repo state.s_installed_binaries nv in
+        state.s_installed_binaries <- OpamPackage.Name.Map.add
+            (OpamPackage.name nv) bin_checksum state.s_installed_binaries);
     update_state () in
 
   let remove_from_install deleted =
-    state.s_installed       <- OpamPackage.Set.diff state.s_installed deleted;
-    state.s_installed_roots <- OpamPackage.Set.diff state.s_installed_roots deleted;
-    state.s_reinstall       <- OpamPackage.Set.diff state.s_reinstall deleted in
+    state.s_installed          <- OpamPackage.Set.diff state.s_installed deleted;
+    state.s_installed_roots    <- OpamPackage.Set.diff state.s_installed_roots deleted;
+    state.s_reinstall          <- OpamPackage.Set.diff state.s_reinstall deleted;
+    state.s_installed_binaries <- OpamPackage.Set.fold (fun d map ->
+        OpamPackage.Name.Map.remove (OpamPackage.name d) map)
+      deleted state.s_installed_binaries in
 
   (* Installation and recompilation are done by child the processes *)
   let child n =

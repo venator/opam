@@ -141,6 +141,10 @@ module Switch: sig
       $opam/$switch/installed.roots} *)
   val installed_roots: t -> switch -> filename
 
+  (** List of packages installed by extracting a pre-compiled archive:
+      {i $opam/$switch/installed.binaries} *)
+  val installed_binaries: t -> switch -> filename
+
   (** Tempory folders used to decompress and compile
       the corresponding archives:
       {i $opam/$OVERSION/build/$NAME-$VERSION} *)

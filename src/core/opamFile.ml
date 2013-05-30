@@ -322,6 +322,35 @@ module X = struct
 
   end
 
+  module Installed_binaries = struct
+
+    let internal = "installed.binaries"
+
+    type t = string name_map
+
+    let empty = OpamPackage.Name.Map.empty
+
+    let of_string _ s =
+      let lines = Lines.of_string s in
+      let map = ref empty in
+      let add n v = map := OpamPackage.Name.Map.add n v !map in
+      List.iter (function
+        | []              -> ()
+        | [name; version] -> add (OpamPackage.Name.of_string name) version
+        | _               -> OpamGlobals.error_and_exit "[file.ml/module Installed_binaries]"
+      ) lines;
+      !map
+
+    let to_string _ t =
+      let buf = Buffer.create 1024 in
+      OpamPackage.Name.Map.iter
+        (fun n v ->
+          Printf.bprintf buf "%s %s\n" (OpamPackage.Name.to_string n) v)
+        t;
+      Buffer.contents buf
+
+  end
+
   module Repo_index = struct
 
     let internal = "repo-index"
@@ -1700,6 +1729,11 @@ end
 module Installed_roots = struct
   include Installed_roots
   include Make (Installed_roots)
+end
+
+module Installed_binaries = struct
+  include Installed_binaries
+  include Make (Installed_binaries)
 end
 
 module Subst = struct

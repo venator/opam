@@ -320,7 +320,8 @@ let get_metadata t =
     ("compiler", compiler);
   ]
 
-let update_metadata t ~installed ~installed_roots ~reinstall =
+let update_metadata t ~installed ~installed_roots ~reinstall
+    ~installed_binaries =
   let installed_roots = OpamPackage.Set.inter installed_roots installed in
   let reinstall = OpamPackage.Set.inter installed_roots reinstall in
   OpamFile.Installed.write
@@ -331,7 +332,10 @@ let update_metadata t ~installed ~installed_roots ~reinstall =
     installed_roots;
   OpamFile.Reinstall.write
     (OpamPath.Switch.reinstall t.root t.switch)
-    reinstall
+    reinstall;
+  OpamFile.Installed_binaries.write
+    (OpamPath.Switch.installed_binaries t.root t.switch)
+    installed_binaries
 
 (* Remove a given package *)
 (* This will be done by the parent process, so theoritically we are
@@ -451,7 +455,10 @@ let remove_package_aux t ~metadata ~rm_build nv =
     let installed = OpamPackage.Set.remove nv t.installed in
     let installed_roots = OpamPackage.Set.remove nv t.installed_roots in
     let reinstall = OpamPackage.Set.remove nv t.reinstall in
+    let installed_binaries = OpamPackage.Name.Map.remove
+        (OpamPackage.name nv) t.installed_binaries in
     update_metadata t ~installed ~installed_roots ~reinstall
+      ~installed_binaries
   )
 
 let remove_package t ~metadata ~rm_build nv =
@@ -483,7 +490,11 @@ let remove_all_packages t ~metadata sol =
     let installed = OpamPackage.Set.diff t.installed deleted in
     let installed_roots = OpamPackage.Set.diff t.installed_roots deleted in
     let reinstall = OpamPackage.Set.diff t.reinstall deleted in
+    let installed_binaries = OpamPackage.Set.fold (fun nv map ->
+        OpamPackage.Name.Map.remove (OpamPackage.name nv) map)
+      deleted t.installed_binaries in
     update_metadata t ~installed ~installed_roots ~reinstall
+        ~installed_binaries
   );
   deleted
 
@@ -498,7 +509,12 @@ let find_binary t nv env_id =
   let rec aux = function
     | [] -> raise Not_found
     | f :: r ->
-      if OpamFilename.check_suffix f ".tar.gz" then f
+      if OpamFilename.check_suffix f ".tar.gz" then
+        let f_str = OpamFilename.to_string f in
+        let no_ext = OpamMisc.remove_suffix ~suffix:".tar.gz" f_str in
+        match OpamMisc.rcut_at no_ext '+' with
+        | None -> aux r
+        | Some (_, checksum) -> f, checksum
       else aux r
   in
   aux binary_files
@@ -694,20 +710,24 @@ let build_and_install_package_aux t ~metadata nv =
       match !OpamGlobals.binary, pkg_state_opt with
       | true, Some pkg_state ->
         let checksum =
-          OpamBinary.Digest.environment t.root t.switch pkg_state.pkg_repo nv
-        in
+          OpamBinary.Digest.environment t.root t.switch pkg_state.pkg_repo
+              t.installed_binaries nv in
         checksum, find_binary_opt t nv checksum
       | false, _
       | _, None -> "", None
     in
 
-    match binary_package_opt with
+    let installed_binaries = match binary_package_opt with
+
     (* A binary package has been found *)
-    | Some bin_pkg ->
+    | Some (bin_pkg, bin_checksum) -> (
       let bin_pkg_str = OpamFilename.to_string bin_pkg in
       OpamGlobals.msg "Extracting binary package.\n";
       OpamSystem.extract_in bin_pkg_str
-        (OpamFilename.Dir.to_string (OpamPath.Switch.root t.root t.switch))
+        (OpamFilename.Dir.to_string (OpamPath.Switch.root t.root t.switch));
+      OpamPackage.Name.Map.add (OpamPackage.name nv) bin_checksum
+          t.installed_binaries
+    )
 
     (* No binary package has been found, build it *)
     | None -> (
@@ -747,7 +767,7 @@ let build_and_install_package_aux t ~metadata nv =
       (* If everyting went fine, finally install the package. *)
       install_package t nv;
 
-      if !OpamGlobals.binary then
+      if !OpamGlobals.binary then (
         (* New list of files in the installation dir. *)
         let new_filetree = map_stats (list_files_sorted t) in
         (* let new_filetree = map_stats (list_files ~dirs sorted t) in *)
@@ -764,20 +784,30 @@ let build_and_install_package_aux t ~metadata nv =
 
         (* Create a binary package. *)
         match pkg_state_opt with
-        | None -> ()
+        | None -> t.installed_binaries
         | Some pkg_state ->
           let bin_checksum =
-            OpamBinary.Digest.binary t.root t.switch pkg_state.pkg_repo nv
-          in
-          archive_package t nv env_checksum bin_checksum installed_files
-    );
+            OpamBinary.Digest.binary t.root t.switch pkg_state.pkg_repo
+                t.installed_binaries nv in
+          archive_package t nv env_checksum bin_checksum installed_files;
+          OpamPackage.Name.Map.add (OpamPackage.name nv) bin_checksum
+              t.installed_binaries
+      )
+      else
+        (* The package hasn't been installed from a pre-compiled archive,
+           and no pre-compiled archive has been saved for later use *)
+        t.installed_binaries
+    ) in
 
     (* update the metadata *)
     if metadata then (
       let installed = OpamPackage.Set.add nv t.installed in
       let installed_roots = OpamPackage.Set.add nv t.installed_roots in
       let reinstall = OpamPackage.Set.remove nv t.reinstall in
+      (* [installed_binaries] is set earlier, since it depends on the
+         binary checksum *)
       update_metadata t ~installed ~installed_roots ~reinstall
+          ~installed_binaries
     )
 
   with e ->

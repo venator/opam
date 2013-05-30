@@ -36,4 +36,5 @@ val update_metadata:
   installed:package_set ->
   installed_roots:package_set ->
   reinstall:package_set ->
+  installed_binaries:string name_map ->
   unit

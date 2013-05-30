@@ -104,34 +104,37 @@ module Digest = struct
     of_string source
 
   (* Create a digest of a compiled package *)
-  let rec binary path switch repo_root nv =
-    (* let opam_f = OpamPath.opam path nv in *)
-    (* TODO: check if the checksum has already been generated *)
-    (* let dep_digests = of_dependencies s opam_file in *)
-    let env_digest = environment path switch repo_root nv in
-    (* Checksums of installed files *)
-    let sorted_files = List.fast_sort String.compare (
-      List.map OpamFilename.to_string (
-        files_of_package path switch nv
-      )
-    ) in
-    (* let file_digests = List.map Digest.file files in *)
-    (* of_list "" (dep_digests @ file_digests) *)
-    (* let files_digest = of_list "" files in *)
-    (* of_list "" [files_digest; env_digest] *)
-    (* Binary digest of package *)
-    of_list "" (env_digest :: sorted_files)
+  let rec binary path switch repo_root installed_binaries nv =
+    try
+      OpamPackage.Name.Map.find (OpamPackage.name nv) installed_binaries
+    with
+    | Not_found ->
+      let env_digest =
+        environment path switch repo_root installed_binaries nv in
+      (* Checksums of installed files *)
+      let sorted_files = List.fast_sort String.compare (
+        List.map OpamFilename.to_string (
+          files_of_package path switch nv
+        )
+      ) in
+      (* let file_digests = List.map Digest.file files in *)
+      (* of_list "" (dep_digests @ file_digests) *)
+      (* let files_digest = of_list "" files in *)
+      (* of_list "" [files_digest; env_digest] *)
+      (* Binary digest of package *)
+      of_list "" (env_digest :: sorted_files)
 
-  and of_dependencies path switch repo_root nv =
+  and of_dependencies path switch repo_root installed_binaries nv =
     (* let opam = opam nv in *)
     (* Get binary digests of dependencies *)
     let deps = local_deps path switch nv in
-    List.map (binary path switch repo_root) deps
+    List.map (binary path switch repo_root installed_binaries) deps
 
   (* Create a digest of an environment for a package *)
-  and environment path switch repo_root nv =
+  and environment path switch repo_root installed_binaries nv =
     (* let opam_f = OpamPath.opam path nv in *)
-    let dep_digests = of_dependencies path switch repo_root nv in
+    let dep_digests =
+      of_dependencies path switch repo_root installed_binaries nv in
     (* Get digest of package source archive *)
     (* TODO: get url file checksum if present, generate it otherwise *)
     let archive_digest =

@@ -74,6 +74,9 @@ type state = {
   (** The list of packages which needs to be reinsalled *)
   reinstall: OpamFile.Reinstall.t;
 
+  (** List of packages installed by extracting a pre-compiled archive *)
+  installed_binaries: OpamFile.Installed_binaries.t;
+
   (** The main configuration file *)
   config: OpamFile.Config.t;
 
@@ -326,6 +329,7 @@ module Types: sig
     installed: OpamFile.Installed.t;
     installed_roots: OpamFile.Installed_roots.t;
     reinstall: OpamFile.Reinstall.t;
+    installed_binaries: OpamFile.Installed_binaries.t;
     config: OpamFile.Config.t;
     package_index: repository_name package_map;
     compiler_index: repository_name compiler_map;

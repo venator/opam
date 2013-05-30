@@ -219,6 +219,12 @@ module Installed_roots: IO_FILE with type t = package_set
 (** List of packages to reinstall: [$opam/$oversion/reinstall] *)
 module Reinstall: IO_FILE with type t = package_set
 
+(** List of packages installed by extracting a pre-compiled archive:
+    [$opam/$switch/installed.binaries]
+    Version values are replaced by a checksum identifying the pre-compiled
+    archive. *)
+module Installed_binaries: IO_FILE with type t = string name_map
+
 (** Compiler version [$opam/compilers/] *)
 module Comp: sig
 
