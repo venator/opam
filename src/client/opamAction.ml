@@ -548,6 +548,15 @@ let print_diff (removed_files, installed_files, modified_files) =
     print_filenames "Modified files" modified_files
 *)
 
+(* Create a log file associated to a binary package.
+   It contains the environment parameters as returned by 'ocamlc -config' *)
+let log_package filename =
+  let ocamlc_config = OpamSystem.ocamlc_config () in
+  let log_content =
+    List.fold_left (fun acc (k, v) -> Printf.sprintf "%s%s: %s\n" acc k v) ""
+        ocamlc_config in
+  OpamSystem.write (filename ^ ".config") log_content
+
 (* Create a binary package, that is to say a .tar.gz archive containing all
    the files installed by OPAM for a given package *)
 let archive_package t nv env_id bin_id installed_files =
@@ -572,7 +581,10 @@ let archive_package t nv env_id bin_id installed_files =
   (* Archive the files in a package *)
   match files with
   | [] -> OpamGlobals.error "No new file installed, unable to create package"
-  | _ -> OpamSystem.archive filename files (OpamFilename.Dir.to_string prefix)
+  | _ ->
+    OpamSystem.archive filename files (OpamFilename.Dir.to_string prefix);
+    (* Create a log file associated to the package *)
+    log_package filename
 
 (* Difference of two list of pairs (file, stats), sorted by [file]
    @return (removed_files * installed_files * modified_files) *)
@@ -717,7 +729,7 @@ let build_and_install_package_aux t ~metadata nv =
       | _, None -> "", None
     in
 
-    let installed_binaries = match binary_package_opt with
+    let bin_checksum = match binary_package_opt with
 
     (* A binary package has been found *)
     | Some (bin_pkg, bin_checksum) -> (
@@ -725,8 +737,7 @@ let build_and_install_package_aux t ~metadata nv =
       OpamGlobals.msg "Extracting binary package.\n";
       OpamSystem.extract_in bin_pkg_str
         (OpamFilename.Dir.to_string (OpamPath.Switch.root t.root t.switch));
-      OpamPackage.Name.Map.add (OpamPackage.name nv) bin_checksum
-          t.installed_binaries
+      Some bin_checksum
     )
 
     (* No binary package has been found, build it *)
@@ -784,19 +795,19 @@ let build_and_install_package_aux t ~metadata nv =
 
         (* Create a binary package. *)
         match pkg_state_opt with
-        | None -> t.installed_binaries
+        | None -> None
         | Some pkg_state ->
           let bin_checksum =
             OpamBinary.Digest.binary t.root t.switch pkg_state.pkg_repo
                 t.installed_binaries nv in
           archive_package t nv env_checksum bin_checksum installed_files;
-          OpamPackage.Name.Map.add (OpamPackage.name nv) bin_checksum
-              t.installed_binaries
+          Some bin_checksum
       )
+      (* The package hasn't been installed from a pre-compiled archive,
+         and no pre-compiled archive has been saved for later use *)
       else
-        (* The package hasn't been installed from a pre-compiled archive,
-           and no pre-compiled archive has been saved for later use *)
-        t.installed_binaries
+        None
+
     ) in
 
     (* update the metadata *)
@@ -804,8 +815,12 @@ let build_and_install_package_aux t ~metadata nv =
       let installed = OpamPackage.Set.add nv t.installed in
       let installed_roots = OpamPackage.Set.add nv t.installed_roots in
       let reinstall = OpamPackage.Set.remove nv t.reinstall in
-      (* [installed_binaries] is set earlier, since it depends on the
-         binary checksum *)
+      let installed_binaries =
+        match bin_checksum with
+        | None -> t.installed_binaries
+        | Some c ->
+          OpamPackage.Name.Map.add (OpamPackage.name nv) c t.installed_binaries
+      in
       update_metadata t ~installed ~installed_roots ~reinstall
           ~installed_binaries
     )

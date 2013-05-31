@@ -397,8 +397,6 @@ let extract_in file dst =
   | Some f -> f dst
 
 let archive filename files dst =
-  (* if Sys.file_exists filename then *)
-  (*  internal_error "%s already exists." filename; *)
   match Tar.create_function filename files with
   | None   -> internal_error "%s is not a valid tar archive name." filename
   | Some f -> f dst
@@ -479,7 +477,7 @@ let ocaml_version = lazy (
 let ocamlc_config () =
   let lines = read_command_output ["ocamlc"; "-config"] in
   let rec aux acc = function
-    | [] -> acc
+    | [] -> List.rev acc
     | hd :: tl ->
       match OpamMisc.cut_at hd ':' with
       | None -> aux acc tl
