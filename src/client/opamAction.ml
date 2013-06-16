@@ -555,7 +555,9 @@ let log_package filename =
   let log_content =
     List.fold_left (fun acc (k, v) -> Printf.sprintf "%s%s: %s\n" acc k v) ""
         ocamlc_config in
-  OpamSystem.write (filename ^ ".config") log_content
+  let log_filename =
+    (OpamMisc.remove_suffix ~suffix:".tar.gz" filename) ^ ".config" in
+  OpamSystem.write log_filename log_content
 
 (* Create a binary package, that is to say a .tar.gz archive containing all
    the files installed by OPAM for a given package *)
