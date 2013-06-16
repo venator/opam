@@ -71,6 +71,11 @@ let binary t nv env_id bin_id =
   binary_dir t nv env_id // (package ^ (
     "+opam+" ^ env_id ^ "+" ^ bin_id ^ ".tar.gz"))
 
+let binary_extlib t nv env_id bin_id =
+  let package = OpamPackage.to_string nv in
+  binary_dir t nv env_id // (package ^ (
+    "+opam+" ^ env_id ^ "+" ^ bin_id ^ ".extlib"))
+
 module Switch = struct
 
   let root t a = t / OpamSwitch.to_string a

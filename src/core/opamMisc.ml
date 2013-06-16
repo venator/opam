@@ -384,8 +384,6 @@ let shell_of_string = function
 let uname_s = uname "--kernel-name"
 let uname_m = uname "--machine"
 
-(* TODO: implement ldd call and output parsing *)
-
 let guess_shell_compat () =
   try shell_of_string (Filename.basename (getenv "SHELL"))
   with _ -> `sh

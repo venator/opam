@@ -91,6 +91,10 @@ val binary_dir: t -> package -> string -> dirname
     {i $opam/binaries/$NAME.$VERSION/$ENV_CHECKSUM/$NAME.$VERSION+$ENV_CHECKSUM+BIN_CHECKSUM.tar.gz} *)
 val binary: t -> package -> string -> string -> filename
 
+(** LDD output associated to a binary package
+    {i $opam/binaries/$NAME.$VERSION/$ENV_CHECKSUM/$NAME.$VERSION+$ENV_CHECKSUM+BIN_CHECKSUM.ldd} *)
+val binary_extlib: t -> package -> string -> string -> filename
+
 (** Switch related paths *)
 module Switch: sig
 

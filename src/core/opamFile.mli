@@ -225,6 +225,9 @@ module Reinstall: IO_FILE with type t = package_set
     archive. *)
 module Installed_binaries: IO_FILE with type t = string name_map
 
+(** External libraries associated to a package *)
+module Package_extlib: IO_FILE with type t = OpamPackage.Extlib.Set.t
+
 (** Compiler version [$opam/compilers/] *)
 module Comp: sig
 

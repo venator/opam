@@ -136,7 +136,6 @@ module Digest = struct
     let dep_digests =
       of_dependencies path switch repo_root installed_binaries nv in
     (* Get digest of package source archive *)
-    (* TODO: get url file checksum if present, generate it otherwise *)
     let archive_digest =
       let url_file =
         let prefix = OpamRepository.read_prefix repo_root in

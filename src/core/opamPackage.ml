@@ -67,6 +67,28 @@ module Name = struct
 
 end
 
+module Extlib = struct
+
+  type t = string
+
+  let to_string x = x
+
+  let of_string x = x
+
+  let compare = compare
+
+  module O = struct
+    type t = string
+    let to_string = to_string
+    let compare = compare
+  end
+
+  module Set = OpamMisc.Set.Make(O)
+
+  module Map = OpamMisc.Map.Make(O)
+
+end
+
 type t = {
   name   : Name.t;
   version: Version.t;

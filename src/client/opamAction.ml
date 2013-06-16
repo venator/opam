@@ -498,9 +498,16 @@ let remove_all_packages t ~metadata sol =
   );
   deleted
 
+(* Use the 'whereis' command to check if all external libs are available *)
+let check_extlib t nv env_id bin_id =
+  let extlib_file = OpamPath.binary_extlib t nv env_id bin_id in
+  let extlib_set = OpamFile.Package_extlib.safe_read extlib_file in
+  OpamPackage.Extlib.Set.for_all (fun l ->
+      List.length (OpamSystem.whereis (OpamPackage.Extlib.to_string l)) > 0)
+    extlib_set
+
 (* Look for a binary package corresponding to the given environment digest in
    known repositories. *)
-(* TODO: use .ldd files to find an appropriate binary package *)
 let find_binary t nv env_id =
   let binary_dir = OpamPath.binary_dir t.root nv env_id in
   if not (OpamFilename.exists_dir binary_dir) then
@@ -514,7 +521,11 @@ let find_binary t nv env_id =
         let no_ext = OpamMisc.remove_suffix ~suffix:".tar.gz" f_str in
         match OpamMisc.rcut_at no_ext '+' with
         | None -> aux r
-        | Some (_, checksum) -> f, checksum
+        | Some (_, checksum) ->
+          if check_extlib t.root nv env_id checksum then
+            f, checksum
+          else
+            aux r
       else aux r
   in
   aux binary_files
@@ -688,6 +699,23 @@ let write_dot_install t nv dot_install =
   OpamFile.Dot_install.write
       (OpamPath.Switch.install t.root t.switch name) dot_install
 
+(* Call ldd on binary files *)
+let ldd_of_files (file_in_dirs, _) =
+  let bin_files =
+    try List.assoc "bin" file_in_dirs with Not_found -> [] in
+  OpamMisc.filter_map (fun bin ->
+      let bin_str = OpamFilename.to_string bin in
+      if OpamMisc.ends_with ~suffix:".byte" bin_str then None
+      else
+        let ldd = OpamSystem.ldd bin_str in
+        let libs = List.map OpamPackage.Extlib.of_string ldd in
+        Some (bin_str, OpamPackage.Extlib.Set.of_list libs))
+    bin_files
+
+let extlib_of_ldd ldd =
+  List.fold_left (fun acc (_, s) -> OpamPackage.Extlib.Set.union acc s)
+      OpamPackage.Extlib.Set.empty ldd
+
 (* A list associating install directories to their absolute path in the current
    OPAM switch. *)
 let install_dirs t nv =
@@ -803,6 +831,14 @@ let build_and_install_package_aux t ~metadata nv =
             OpamBinary.Digest.binary t.root t.switch pkg_state.pkg_repo
                 t.installed_binaries nv in
           archive_package t nv env_checksum bin_checksum installed_files;
+
+          (* Call ldd on binaries and write the extlib file *)
+          (* TODO: check if binaries exists outside of $OPAM/$OVERSION/bin *)
+          let ldd = ldd_of_files dot_install_files in
+          OpamFile.Package_extlib.write
+              (OpamPath.binary_extlib t.root nv env_checksum bin_checksum)
+              (extlib_of_ldd ldd);
+
           Some bin_checksum
       )
       (* The package hasn't been installed from a pre-compiled archive,

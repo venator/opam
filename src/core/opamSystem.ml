@@ -500,6 +500,30 @@ let system_ocamlc_where = system [ "ocamlc"; "-where" ]
 
 let system_ocamlc_version = system [ "ocamlc"; "-version" ]
 
+(* Call 'ldd BINARY' and list dynamic dependencies *)
+let ldd file =
+  let lines = read_command_output ["ldd"; file] in
+  let rec aux acc = function
+    | [] -> List.rev acc
+    | hd :: tl ->
+      match OpamMisc.cut_at hd '=' with
+      | None -> aux acc tl
+      | Some (l, _) ->
+        let lib = OpamMisc.strip l in
+        aux (lib :: acc) tl
+  in
+  aux [] lines
+
+(* Call 'whereis' and returns a list of the files found *)
+let whereis file =
+  let output = read_command_output ["whereis"; file] in
+  match output with
+  | [] -> []
+  | hd :: _ ->
+    match OpamMisc.cut_at hd ':' with
+    | None -> []
+    | Some (_, pathes) -> OpamMisc.split pathes ' '
+
 let download_command =
   let retry = string_of_int OpamGlobals.download_retry in
   let wget src =

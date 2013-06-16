@@ -33,6 +33,11 @@ module Name: sig
   val default: t
 end
 
+(** External libraries *)
+module Extlib: sig
+  include OpamMisc.ABSTRACT
+end
+
 (** Package (name x version) pairs *)
 include OpamMisc.ABSTRACT
 

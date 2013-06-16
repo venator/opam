@@ -351,6 +351,30 @@ module X = struct
 
   end
 
+  module Package_extlib = struct
+
+    let internal = "package_extlib"
+
+    type t = OpamPackage.Extlib.Set.t
+
+    let empty = OpamPackage.Extlib.Set.empty
+
+    let of_string _ s =
+      List.fold_left (fun acc -> function
+        | [] -> acc
+        | hd :: _ -> let lib = OpamPackage.Extlib.of_string hd in
+            OpamPackage.Extlib.Set.add lib acc)
+            OpamPackage.Extlib.Set.empty (Lines.of_string s)
+
+    let to_string _ t =
+      let buf = Buffer.create 1024 in
+      OpamPackage.Extlib.Set.iter (fun l ->
+        let lib_str = OpamPackage.Extlib.to_string l in
+        Printf.bprintf buf "%s\n" lib_str) t;
+      Buffer.contents buf
+
+  end
+
   module Repo_index = struct
 
     let internal = "repo-index"
@@ -1734,6 +1758,11 @@ end
 module Installed_binaries = struct
   include Installed_binaries
   include Make (Installed_binaries)
+end
+
+module Package_extlib = struct
+  include Package_extlib
+  include Make (Package_extlib)
 end
 
 module Subst = struct
