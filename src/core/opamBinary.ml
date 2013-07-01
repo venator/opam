@@ -51,29 +51,54 @@ let local_deps path switch nv =
   let installed = installed_packages path switch in
   installed_deps (OpamFormula.ands [depends; depopts]) installed
 
+(* Filter out bytecode binaries *)
+let filter_natives bin_files =
+  List.filter (fun bin ->
+      let bin_str = OpamFilename.to_string bin in
+      if OpamMisc.ends_with ~suffix:".byte" bin_str then false else true)
+    bin_files
+
+(* Call ldd on binary files *)
+let ldd_of_files natives =
+  List.map (fun native ->
+      let native_str = OpamFilename.to_string native in
+      let ldd = OpamSystem.ldd native_str in
+      let libs = List.map OpamPackage.Extlib.of_string ldd in
+      (native_str, OpamPackage.Extlib.Set.of_list libs))
+    natives
+
+(* Returns a set of external dependencies given a ldd output *)
+let extlib_of_ldd ldd =
+  List.fold_left (fun acc (_, s) -> OpamPackage.Extlib.Set.union acc s)
+      OpamPackage.Extlib.Set.empty ldd
+
 (* Retrieve the files installed by a package *)
 let files_of_package path switch package =
   let open OpamFilename.OP in
   let name = OpamPackage.name package in
   let filename = OpamPath.Switch.install path switch name in
+
+
   let dot_install = OpamFile.Dot_install.safe_read filename in
   let aux_simple prefix acc basename =
     (* Don't include optional files *)
     if basename.optional then acc
-    else prefix // (OpamFilename.Base.to_string basename.c) :: acc
-  in
-  let aux_bin prefix acc (basename, rename_opt) =
+    else prefix // (OpamFilename.Base.to_string basename.c) :: acc in
+  let aux_bin acc (basename, rename_opt) =
     if basename.optional then acc
     else match rename_opt with
-      | None -> prefix // (OpamFilename.Base.to_string basename.c) :: acc
-      | Some r -> prefix // (OpamFilename.Base.to_string r) :: acc
-  in
+      | None -> OpamFilename.of_string
+          (OpamFilename.Base.to_string basename.c) :: acc
+      | Some r -> OpamFilename.of_string
+          (OpamFilename.Base.to_string r) :: acc in
   let aux_misc prefix acc (basename, filename) =
     if basename.optional then acc
-    else prefix // (OpamFilename.to_string filename) :: acc
-  in
-  List.fold_left (aux_bin (OpamPath.Switch.bin path switch)) []
-      (OpamFile.Dot_install.bin dot_install)
+    else prefix // (OpamFilename.to_string filename) :: acc in
+  let binaries =
+    List.fold_left aux_bin [] (OpamFile.Dot_install.bin dot_install) in
+  let extlibs =
+    extlib_of_ldd (ldd_of_files (filter_natives binaries)) in
+  binaries
   @ List.fold_left (aux_simple (OpamPath.Switch.lib path switch name)) []
       (OpamFile.Dot_install.lib dot_install)
   @ List.fold_left (aux_simple (OpamPath.Switch.toplevel path switch)) []
@@ -83,7 +108,8 @@ let files_of_package path switch package =
   @ List.fold_left (aux_simple (OpamPath.Switch.doc path switch name)) []
       (OpamFile.Dot_install.doc dot_install)
   @ List.fold_left (aux_misc (OpamPath.Switch.root path switch)) []
-      (OpamFile.Dot_install.misc dot_install)
+      (OpamFile.Dot_install.misc dot_install),
+  (OpamPackage.Extlib.Set.elements extlibs)
 
 module Digest = struct
 
@@ -111,18 +137,17 @@ module Digest = struct
     | Not_found ->
       let env_digest =
         environment path switch repo_root installed_binaries nv in
+      let installed_files, extlibs = files_of_package path switch nv in
       (* Checksums of installed files *)
-      let sorted_files = List.fast_sort String.compare (
-        List.map OpamFilename.to_string (
-          files_of_package path switch nv
-        )
-      ) in
+      let sorted_files = List.fast_sort String.compare
+        (List.map OpamFilename.to_string installed_files) in
+      let extlib_str = List.map OpamPackage.Extlib.to_string extlibs in
       (* let file_digests = List.map Digest.file files in *)
       (* of_list "" (dep_digests @ file_digests) *)
       (* let files_digest = of_list "" files in *)
       (* of_list "" [files_digest; env_digest] *)
       (* Binary digest of package *)
-      of_list "" (env_digest :: sorted_files)
+      of_list "" (env_digest :: extlib_str @ sorted_files)
 
   and of_dependencies path switch repo_root installed_binaries nv =
     (* let opam = opam nv in *)
