@@ -502,7 +502,9 @@ let system_ocamlc_version = system [ "ocamlc"; "-version" ]
 
 (* Call 'ldd BINARY' and list dynamic dependencies *)
 let ldd file =
-  let lines = read_command_output ["ldd"; file] in
+  let lines =
+    try read_command_output ["ldd"; file] with
+    | Process_error _ -> [] in
   let rec aux acc = function
     | [] -> List.rev acc
     | hd :: tl ->
