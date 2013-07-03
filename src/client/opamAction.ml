@@ -810,34 +810,51 @@ let build_and_install_package_aux t ~metadata nv =
         (* let new_filetree = map_stats (list_files ~dirs sorted t) in *)
 
         (* Find removed, installed and modified files. *)
-        let (_, installed_files, _) =
+        let (removed_files, installed_files, modified_files) =
           diff_filetrees init_filetree new_filetree
         in
 
-        (* Create a .install containing installed files. *)
-        let dot_install_files = sort_files_in_dirs ~dirs installed_files in
-        let install = dot_install_of_files dot_install_files in
-        write_dot_install t nv install;
+        (* Exit with an error if some files have been removed *)
+        if List.length removed_files > 0 then begin
+          OpamGlobals.error_and_exit
+              "Some files have been removed during the installation."
+        end;
 
-        (* Create a binary package. *)
-        match pkg_state_opt with
-        | None -> None
-        | Some pkg_state ->
-          let bin_checksum =
-            OpamBinary.Digest.binary t.root t.switch pkg_state.pkg_repo
-                t.installed_binaries nv in
-          archive_package t nv env_checksum bin_checksum installed_files;
+        (* Issue a warning and don't create the package if some files have been 
+           modified *)
+        if List.length modified_files > 0 then begin
+          OpamGlobals.warning "Some files have been modified during the installation, unable to create a binary package.";
+          None
+        end
+        else begin
 
-          (* Call ldd on binaries and write the extlib file *)
-          (* TODO: check if binaries exists outside of $OPAM/$OVERSION/bin *)
-          let binaries = binaries_of_installed_files dot_install_files in
-          let natives = OpamBinary.filter_natives binaries in
-          let ldd = OpamBinary.ldd_of_files natives in
-          OpamFile.Package_extlib.write
-              (OpamPath.binary_extlib t.root nv env_checksum bin_checksum)
-              (OpamBinary.extlib_of_ldd ldd);
+          (* Create a .install containing installed files. *)
+          (* TODO: move the .install creation outside of the binary package 
+             creation part; use tar output to list installed files in this case *)
+          let dot_install_files = sort_files_in_dirs ~dirs installed_files in
+          let install = dot_install_of_files dot_install_files in
+          write_dot_install t nv install;
 
-          Some bin_checksum
+          (* Create a binary package. *)
+          match pkg_state_opt with
+          | None -> None
+          | Some pkg_state ->
+            let bin_checksum =
+              OpamBinary.Digest.binary t.root t.switch pkg_state.pkg_repo
+                  t.installed_binaries nv in
+            archive_package t nv env_checksum bin_checksum installed_files;
+
+            (* Call ldd on binaries and write the extlib file *)
+            (* TODO: check if binaries exists outside of $OPAM/$OVERSION/bin *)
+            let binaries = binaries_of_installed_files dot_install_files in
+            let natives = OpamBinary.filter_natives binaries in
+            let ldd = OpamBinary.ldd_of_files natives in
+            OpamFile.Package_extlib.write
+                (OpamPath.binary_extlib t.root nv env_checksum bin_checksum)
+                (OpamBinary.extlib_of_ldd ldd);
+
+            Some bin_checksum
+          end
       )
       (* The package hasn't been installed from a pre-compiled archive,
          and no pre-compiled archive has been saved for later use *)
