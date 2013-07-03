@@ -503,7 +503,6 @@ let check_extlib t nv env_id bin_id =
   let extlib_file = OpamPath.binary_extlib t nv env_id bin_id in
   let extlib_set = OpamFile.Package_extlib.safe_read extlib_file in
   OpamPackage.Extlib.Set.for_all (fun l ->
-      Printf.printf "checking lib %s\n" (OpamPackage.Extlib.to_string l);
       List.length (OpamSystem.whereis (OpamPackage.Extlib.to_string l)) > 0)
     extlib_set
 
