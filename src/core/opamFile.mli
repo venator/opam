@@ -212,7 +212,7 @@ module Export: IO_FILE with type t = package_set * package_set
 (** List of installed packages: [$opam/$oversion/installed] *)
 module Installed: IO_FILE with type t = package_set
 
-(** List of packages explicitely installed by the user:
+(** List of packages explicitly installed by the user:
     [$opam/$switch/installed.user] *)
 module Installed_roots: IO_FILE with type t = package_set
 
@@ -430,7 +430,7 @@ module URL: sig
   (** URL address *)
   val url: t -> string
 
-  (** Backend kind (could be curl/rsync/git/darcs at the moment) *)
+  (** Backend kind (could be curl/rsync/git/darcs/hg at the moment) *)
   val kind: t -> repository_kind option
 
   (** Archive checksum *)

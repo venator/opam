@@ -62,16 +62,17 @@ type build_options = {
   fake          : bool;
   external_tags : string list;
   jobs          : int option;
+  json_output   : string option;
   binary        : bool;
 }
 
 let create_build_options
     keep_build_dir make no_checksums build_test
     build_doc dryrun external_tags cudf_file fake
-    jobs binary = {
+    jobs json_output binary = {
   keep_build_dir; make; no_checksums;
   build_test; build_doc; dryrun; external_tags;
-  cudf_file; fake; jobs; binary
+  cudf_file; fake; jobs; json_output; binary
 }
 
 let set_build_options b =
@@ -83,6 +84,7 @@ let set_build_options b =
   OpamGlobals.external_tags  := b.external_tags;
   OpamGlobals.cudf_file      := b.cudf_file;
   OpamGlobals.fake           := b.fake;
+  OpamGlobals.json_output    := b.json_output;
   OpamGlobals.binary         := b.binary;
   OpamGlobals.jobs           :=
     begin match b.jobs with
@@ -211,6 +213,9 @@ let installed_flag =
 let installed_roots_flag =
   mk_flag ["installed-roots"] "Display only the installed roots."
 
+let fish_flag =
+  mk_flag ["fish"] "Use fish-compatible mode for configuring OPAM."
+
 let zsh_flag =
   mk_flag ["zsh"] "Use zsh-compatible mode for configuring OPAM."
 
@@ -233,6 +238,7 @@ let repo_kind_flag =
     "local", `local;
     "git"  , `git;
     "darcs"  , `darcs;
+    "hg"   , `hg;
 
     (* aliases *)
     "wget" , `http;
@@ -241,7 +247,7 @@ let repo_kind_flag =
   ] in
   mk_opt ["k";"kind"]
     "KIND" "Specify the kind of the repository to be set (the main ones \
-            are 'http', 'local', 'git' or 'darcs')."
+            are 'http', 'local', 'git', 'darcs' or 'hg')."
     Arg.(some (enum kinds)) None
 
 let jobs_flag =
@@ -341,20 +347,23 @@ let build_options =
   let fake =
     mk_flag ["fake"]
       "WARNING: This option is for testing purposes only! Using this option without    \
-       care is the best way to corrupt your current compiler environement. When using \
+       care is the best way to corrupt your current compiler environment. When using \
        this option OPAM will run a dry-run of the solver and then fake the build and  \
        install commands." in
+  let output_json =
+    mk_opt ["output-json"] "FILENAME"
+      "Save the result output of an OPAM run in a computer-readable file"
+      Arg.(some string) None in
   let binary =
     mk_flag ["c";"binary"]
       "WARNING: early stage feature, expect bugs. \
       Enable binary mode: try to find a suitable pre-compiled package and install it \
       instead of building the sources. If it doesn't exist, build the package and \
       create a pre-compiled package for later use." in
-
   Term.(pure create_build_options
     $keep_build_dir $make $no_checksums $build_test
     $build_doc $dryrun $external_tags $cudf_file $fake
-    $jobs_flag $binary)
+    $jobs_flag $output_json $binary)
 
 let guess_repository_kind kind address =
   match kind with
@@ -367,6 +376,8 @@ let guess_repository_kind kind address =
       if OpamMisc.starts_with ~prefix:"git" address
       || OpamMisc.ends_with ~suffix:"git" address then
         `git
+      else if OpamMisc.starts_with ~prefix:"hg" address then
+        `hg
       else
         `http
   | Some k -> k
@@ -409,7 +420,7 @@ let init =
   let auto_setup = mk_flag ["a";"auto-setup"] "Automatically setup all the global and user configuration options for OPAM." in
   let init global_options
       build_options repo_kind repo_name repo_address compiler jobs
-      no_setup auto_setup sh csh zsh dot_profile_o =
+      no_setup auto_setup sh csh zsh fish dot_profile_o =
     set_global_options global_options;
     set_build_options build_options;
     let repo_kind = guess_repository_kind repo_kind repo_address in
@@ -425,12 +436,13 @@ let init =
       if sh then `sh
       else if csh then `csh
       else if zsh then `zsh
+      else if fish then `fish
       else OpamMisc.guess_shell_compat () in
     let dot_profile = init_dot_profile shell dot_profile_o in
     Client.init repository compiler ~jobs shell dot_profile update_config in
   Term.(pure init
     $global_options $build_options $repo_kind_flag $repo_name $repo_address $compiler $jobs
-    $no_setup $auto_setup $sh_flag $csh_flag $zsh_flag $dot_profile_flag),
+    $no_setup $auto_setup $sh_flag $fish_flag $csh_flag $zsh_flag $dot_profile_flag),
   term_info "init" ~doc ~man
 
 (* LIST *)
@@ -446,18 +458,23 @@ let list =
         installed version or -- if the package is not installed, and a short \
         description.";
     `P " The full description can be obtained by doing $(b,opam info <package>). \
-        You can search through the package descriptions using the $(b,opam search) command."
+        You can search through the package descriptions using the $(b,opam search) \
+        command."
   ] in
-  let list global_options print_short installed installed_roots packages =
+  let all =
+    mk_flag ["a";"all"]
+      "List all the packages which can be installed on the system." in
+  let list global_options print_short all installed installed_roots packages =
     set_global_options global_options;
-    let filter = match installed, installed_roots with
-      | _, true -> `roots
-      | true, _ -> `installed
-      | _       -> `installable in
+    let filter = match all, installed, installed_roots with
+      | true, _, _ -> `installable
+      | _, _, true -> `roots
+      | _, true, _ -> `installed
+      | _          -> `installed in
     Client.list ~print_short ~filter ~exact_name:true ~case_sensitive:false
       packages in
   Term.(pure list $global_options
-    $print_short_flag $installed_flag $installed_roots_flag
+    $print_short_flag $all $installed_flag $installed_roots_flag
     $pattern_list),
   term_info "list" ~doc ~man
 
@@ -584,6 +601,7 @@ let config =
   let no_eval_doc     = "Do not install `opam-switch-eval` to switch & eval using a single command." in
   let dot_profile_doc = "Select which configuration file to update (default is ~/.profile)." in
   let list_doc        = "List the current configuration." in
+  let sexp_doc        = "Display environment variables as an s-expression" in
   let profile         = mk_flag ["profile"]        profile_doc in
   let ocamlinit       = mk_flag ["ocamlinit"]      ocamlinit_doc in
   let no_complete     = mk_flag ["no-complete"]    no_complete_doc in
@@ -592,11 +610,12 @@ let config =
   let user            = mk_flag ["u";"user"]       user_doc in
   let global          = mk_flag ["g";"global"]     global_doc in
   let list            = mk_flag ["l";"list"]       list_doc in
+  let sexp            = mk_flag ["sexp"]           sexp_doc in
   let env    =
     mk_opt ["e"] "" "Backward-compatible option, equivalent to $(b,opam config env)." Arg.string "" in
 
   let config global_options
-      command env is_rec sh csh zsh
+      command env is_rec sh csh zsh fish sexp
       dot_profile_o list all global user
       profile ocamlinit no_complete no_switch_eval
       params =
@@ -610,10 +629,10 @@ let config =
     match command with
     | None           ->
       if env="nv" then
-        OpamConfigCommand.env ~csh
+        OpamConfigCommand.env ~csh ~sexp ~fish
       else
         OpamGlobals.error_and_exit "Missing subcommand. Usage: 'opam config <SUBCOMMAND>'"
-    | Some `env   -> Client.CONFIG.env ~csh
+    | Some `env   -> Client.CONFIG.env ~csh ~sexp ~fish
     | Some `setup ->
       let user        = all || user in
       let global      = all || global in
@@ -625,6 +644,7 @@ let config =
         if sh then `sh
         else if csh then `csh
         else if zsh then `zsh
+        else if fish then `fish
         else OpamMisc.guess_shell_compat () in
       let dot_profile = init_dot_profile shell dot_profile_o in
       if list then
@@ -641,7 +661,7 @@ let config =
            Main options\n\
           \    -l, --list           %s\n\
           \    -a, --all            %s\n\
-          \    --sh,--csh,--zsh     Force the configuration mode to a given shell.\n\
+          \    --sh,--csh,--zsh,--fish     Force the configuration mode to a given shell.\n\
            \n\
            User configuration\n\
           \    -u, --user           %s\n\
@@ -677,7 +697,7 @@ let config =
     | Some `asmlink  -> Client.CONFIG.config (mk ~is_byte:false ~is_link:true) in
 
   Term.(pure config
-    $global_options $command $env $is_rec $sh_flag $csh_flag $zsh_flag
+    $global_options $command $env $is_rec $sh_flag $csh_flag $zsh_flag $fish_flag $sexp
     $dot_profile_flag $list $all $global $user
     $profile $ocamlinit $no_complete $no_switch_eval
     $params),
@@ -723,7 +743,7 @@ let remove =
   ] in
   let autoremove =
     mk_flag ["a";"auto-remove"]
-      "Remove all the packages which have not been explicitely installed and \
+      "Remove all the packages which have not been explicitly installed and \
        which are not necessary anymore. It is possible to enforce keeping an \
        already installed package by running $(b,opam install <pkg>). This flag \
        can also be set using the $(b,\\$OPAMAUTOREMOVE) configuration variable." in
@@ -835,7 +855,7 @@ let repository name =
   let usage_add = "opam repository add <NAME> <ADDRESS>" in
   let usage_list = "opam repository list" in
   let usage_priority = "opam repository priority <NAME> <INT>" in
-  let usage_remove = "opam repository remove <NANE>" in
+  let usage_remove = "opam repository remove <NAME>" in
 
   let repository global_options command kind priority short params =
     set_global_options global_options;
@@ -898,7 +918,7 @@ let switch =
                                     description. To switch to an already installed compiler alias (with \
                                     state = I), use $(b,opam switch <name>). If you want to use a new \
                                     compiler <comp>, use $(b,opam switch <comp>): this will download, \
-                                    compile and create a fresh and independant environment where new packages can be installed. \
+                                    compile and create a fresh and independent environment where new packages can be installed. \
                                     If you want to create a new compiler alias (for instance because you already have \
                                     this compiler version installed), use $(b,opam switch <name> --alias-of <comp>). In case \
                                     <name> and <comp> are the same, this is equivalent to $(b,opam switch <comp>).";
@@ -906,10 +926,10 @@ let switch =
   ] in
   let man = [
     `S "DESCRIPTION";
-    `P "This command allows to switch between different compiler versions, \
+    `P "This command allows one to switch between different compiler versions, \
         installing the compiler if $(b,opam switch) is used to switch to that \
         compiler for the first time. The different compiler versions are \
-        totally independant from each other, meaning that OPAM maintains a \
+        totally independent from each other, meaning that OPAM maintains a \
         separate state (e.g. list of installed packages...) for each.";
     `P "See the documentation of $(b,opam switch list) to see the compilers which \
         are available, and how to switch or to install a new one."
@@ -933,6 +953,8 @@ let switch =
     mk_flag ["no-switch"]
       "Only install the compiler switch, without switching to it. If the compiler switch \
        is already installed, then do nothing." in
+  let installed =
+    mk_flag ["i";"installed"] "List installed compiler switches only." in
 
   let switch global_options
       build_options command alias_of filename print_short installed no_warning no_switch
@@ -988,7 +1010,7 @@ let switch =
   Term.(pure switch
     $global_options $build_options $command
     $alias_of $filename $print_short_flag
-    $installed_flag $no_warning $no_switch $params),
+    $installed $no_warning $no_switch $params),
   term_info "switch" ~doc ~man
 
 (* PIN *)
@@ -1025,6 +1047,7 @@ let pin =
       "version", `version;
       "local"  , `local;
       "rsync"  , `local;
+      "hg"     , `hg
     ] in
     Arg.(value & opt (some & enum kinds) None & doc) in
   let force = mk_flag ["f";"force"] "Disable consistency checks." in
@@ -1078,8 +1101,8 @@ let default =
     `P "OPAM is a package manager for OCaml. It uses the powerful mancoosi \
         tools to handle dependencies, including support for version \
         constraints, optional dependencies, and conflict management.";
-    `P "It has support for different remote repositories such as HTTP, rsync, git \
-        and darcs. It handles multiple OCaml versions concurrently, and is \
+    `P "It has support for different remote repositories such as HTTP, rsync, git, \
+        darcs and mercurial. It handles multiple OCaml versions concurrently, and is \
         flexible enough to allow you to use your own repositories and packages \
         in addition to the central ones it provides.";
     `P "Use either $(b,opam <command> --help) or $(b,opam help <command>) \
@@ -1150,6 +1173,7 @@ let run_external_command () =
 
 let () =
   Sys.catch_break true;
+  let _ = Sys.signal Sys.sigpipe Sys.Signal_ignore in
   try
     if is_external_command () then
       run_external_command ();

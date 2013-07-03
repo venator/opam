@@ -119,8 +119,13 @@ let chdir dir =
 
 let in_dir dir fn =
   let reset_cwd =
-    let cwd = Sys.getcwd () in
-    fun () -> chdir cwd in
+    let cwd =
+      try Some (Sys.getcwd ())
+      with _ -> None in
+    fun () ->
+      match cwd with
+      | None     -> ()
+      | Some cwd -> try chdir cwd with _ -> () in
   chdir dir;
   try
     let r = fn () in
@@ -200,23 +205,20 @@ let getchdir s =
   chdir s;
   p
 
-(* Expand '..' and '.' *)
 let normalize s =
-  if Sys.file_exists s then
-    getchdir (getchdir s)
-  else
-    s
+  getchdir (getchdir s)
+
+let needs_normalization f =
+  Sys.file_exists f && Filename.is_relative f
 
 let real_path p =
-  if Sys.file_exists p && Sys.is_directory p then
+  if not (needs_normalization p) then p
+  else if Sys.is_directory p then
     normalize p
   else (
-    let dir = normalize (Filename.dirname p) in
     let dir =
-      if Filename.is_relative dir then
-        Sys.getcwd () / dir
-      else
-        dir in
+      let d = Filename.dirname p in
+      if needs_normalization d then normalize d else d in
     let base = Filename.basename p in
     if base = "." then
       dir

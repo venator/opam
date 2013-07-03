@@ -136,7 +136,7 @@ let update_global_config t ~warning switch =
   OpamState.update_switch_config t switch;
   let t = OpamState.load_state "switch-update-config" in
   if warning then
-    OpamState.print_env_warning t None
+    OpamState.print_env_warning_at_switch t
 
 let install_with_packages ~quiet ~packages switch compiler =
   log "install %b %s %s" quiet
@@ -181,7 +181,7 @@ let install_with_packages ~quiet ~packages switch compiler =
         (OpamPackage.Name.to_string n)
         (OpamPackage.Version.to_string v) in
 
-  let uninstall_compiler () =
+  let remove_compiler () =
     remove switch in
 
   match bad_packages with
@@ -193,11 +193,11 @@ let install_with_packages ~quiet ~packages switch compiler =
     begin try
         OpamSolution.check_solution solution;
       with e ->
-        uninstall_compiler ();
+        remove_compiler ();
         raise e
     end
   | p::_ ->
-    uninstall_compiler ();
+    remove_compiler ();
     package_error p
 
 let install ~quiet ~warning ~update_config switch compiler =
@@ -228,6 +228,7 @@ let switch ~quiet ~warning switch =
     install ~quiet ~warning ~update_config:true switch compiler
   ) else
     update_global_config ~warning t switch;
+  let t = OpamState.load_state "switch-2" in
   OpamState.check_base_packages t
 
 (* Remove from [set] all the packages whose names appear in
@@ -298,3 +299,6 @@ let reinstall switch =
 
   (* Install the compiler *)
   install_with_packages ~quiet:false ~packages switch ocaml_version
+
+let () =
+  OpamState.switch_reinstall_hook := reinstall

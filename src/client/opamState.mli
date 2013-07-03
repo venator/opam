@@ -68,7 +68,7 @@ type state = {
   (** The list of installed packages *)
   installed: OpamFile.Installed.t;
 
-  (** The list of packages explicitely installed by the user *)
+  (** The list of packages explicitly installed by the user *)
   installed_roots: OpamFile.Installed_roots.t;
 
   (** The list of packages which needs to be reinsalled *)
@@ -120,11 +120,11 @@ val get_opam_env: state -> env
 (** Update an environment. *)
 val add_to_env: state -> env -> (string * string * string) list -> env
 
-(** Print a warning if the environment is not set-up properly.
-    [user_config] is [None] if we just ask the user to run an `eval`
-    command (typically after a switch), otherwise we also tell her to
-    add a line to her shell profile file. *)
-val print_env_warning: state -> user_config option -> unit
+(** Print a warning if the environment is not set-up properly on init. *)
+val print_env_warning_at_init: state -> user_config -> unit
+
+(** Print a warning if the environment is not set-up properly on switch. *)
+val print_env_warning_at_switch: state -> unit
 
 (** {2 Initialisation} *)
 

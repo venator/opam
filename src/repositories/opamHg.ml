@@ -17,81 +17,81 @@
 open OpamTypes
 open OpamFilename.OP
 
-let log fmt = OpamGlobals.log "GIT" fmt
+let log fmt = OpamGlobals.log "HG" fmt
 
-module Git = struct
+module Hg = struct
 
   type address = {
     address: dirname;
     commit : string option;
   }
 
-  (* A git address could be of the form: git://path/to/the/repository/#SHA *)
+  (* A hg address could be of the form: hg://path/to/the/repository/#SHA *)
   let address repo =
     let address = OpamFilename.Dir.to_string repo.repo_address in
-    let address, commit = OpamMisc.git_of_string address in
+    let address, commit = OpamMisc.hg_of_string address in
     { address = OpamFilename.raw_dir address; commit }
 
   let exists repo =
-    OpamFilename.exists_dir (repo.repo_root / ".git")
+    OpamFilename.exists_dir (repo.repo_root / ".hg")
 
   let init repo =
     let address = address repo in
     let repo = OpamFilename.Dir.to_string address.address in
-    OpamSystem.commands [
-      [ "git" ; "init" ] ;
-      [ "git" ; "remote" ; "add" ; "origin" ; repo ] ;
-    ]
+    ( OpamSystem.command [ "hg" ; "init" ];
+      OpamFilename.write (OpamFilename.of_string ".hg/hgrc")
+        (Printf.sprintf "[paths]\ndefault = %s\n" repo)
+    )
 
   let fetch repo =
     let address = address repo in
-    OpamGlobals.msg "%-10s Fetching %s%s\n"
+    OpamGlobals.msg "%-10s Synchronizing with %s%s\n"
       (OpamRepositoryName.to_string repo.repo_name)
       (OpamFilename.prettify_dir address.address)
       (match address.commit with
-      | None   -> ""
-      | Some c -> Printf.sprintf " [%s]" c);
+       | None   -> ""
+       | Some c -> Printf.sprintf " [%s]" c);
     OpamFilename.in_dir repo.repo_root (fun () ->
-      OpamSystem.command [ "git" ; "fetch" ; "origin" ]
+      OpamSystem.command [ "hg" ; "pull" ]
     )
+
+  let unknown_commit commit =
+    OpamSystem.internal_error "Unknown mercurial revision/branch/bookmark: %s."
+      commit
 
   let merge repo =
     let address = address repo in
     let merge commit =
-      try OpamSystem.command [ "git" ; "merge" ; commit ]; true
+      try OpamSystem.command [ "hg" ; "update" ; commit ]; true
       with _ -> false in
     let commit = match address.commit with
-      | None   -> "origin/master"
+      | None   -> "tip"
       | Some c -> c in
     OpamFilename.in_dir repo.repo_root (fun () ->
       if not (merge commit) then
-        if not (merge ("origin/"^commit)) then
-          OpamSystem.internal_error "Unknown revision: %s." commit
+        unknown_commit commit
     )
 
   let diff repo =
     let address = address repo in
     let diff commit =
       try Some (
-        OpamSystem.read_command_output ["git" ; "diff" ; commit ; "--name-only"])
+        OpamSystem.read_command_output
+          ["hg" ; "diff" ; "--stat" ; "-r" ; commit ])
       with _ -> None in
     let commit = match address.commit with
-      | None   -> "origin/master"
+      | None   -> "tip"
       | Some c -> c in
     OpamFilename.in_dir repo.repo_root (fun () ->
       match diff commit with
       | Some [] -> false
       | Some _  -> true
-      | None       ->
-        match diff ("origin/"^commit) with
-        | Some [] -> false
-        | Some _  -> true
-        | None    -> OpamSystem.internal_error "Unknown revision: %s." commit
+      | None    -> unknown_commit commit
     )
 
 end
 
-module B = OpamVCS.Make(Git)
+module B = OpamVCS.Make(Hg)
 
 let register () =
-  OpamRepository.register_backend `git (module B: OpamRepository.BACKEND)
+  OpamRepository.register_backend `hg (module B: OpamRepository.BACKEND)

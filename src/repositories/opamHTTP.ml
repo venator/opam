@@ -38,10 +38,12 @@ let index_file_save local_path = local_path // "urls.txt.0"
 let index_archive local_path = local_path // "index.tar.gz"
 
 let local_files repo =
-  OpamPath.Repository.version repo ::
-  OpamFilename.rec_files (OpamPath.Repository.packages_dir repo) @
-  OpamFilename.rec_files (OpamPath.Repository.archives_dir repo) @
-  OpamFilename.rec_files (OpamPath.Repository.compilers_dir repo)
+  let all =
+    OpamPath.Repository.version repo ::
+      OpamFilename.rec_files (OpamPath.Repository.packages_dir repo) @
+      OpamFilename.rec_files (OpamPath.Repository.archives_dir repo) @
+      OpamFilename.rec_files (OpamPath.Repository.compilers_dir repo) in
+  List.filter OpamFilename.exists all
 
 let make_state ~download_index repo =
   if List.mem_assoc repo.repo_address !state_cache then
@@ -57,6 +59,9 @@ let make_state ~download_index repo =
         if OpamFilename.exists local_index_file then
           OpamFilename.move ~src:local_index_file ~dst:local_index_file_save;
         try
+	  OpamGlobals.msg "%-10s Downloading %s\n"
+	    (OpamRepositoryName.to_string repo.repo_name)
+	    (OpamFilename.to_string remote_index_file);
           let file =
             OpamFilename.download ~overwrite:false remote_index_file repo.repo_root  in
           OpamFilename.remove local_index_file_save;
@@ -126,11 +131,15 @@ module B = struct
   }
 
   let init repo =
+    log "init";
     try
       (* Download urls.txt *)
       let state = make_state ~download_index:true repo in
       try
         (* Download index.tar.gz *)
+	OpamGlobals.msg "%-10s Downloading %s\n"
+	  (OpamRepositoryName.to_string repo.repo_name)
+	  (OpamFilename.to_string state.remote_index_archive);
         let file =
           OpamFilename.download ~overwrite:true
             state.remote_index_archive state.local_dir in
@@ -144,20 +153,21 @@ module B = struct
         "Error: %s is unavailable."
         (OpamFilename.Dir.to_string repo.repo_address)
 
+
   let curl ~remote_file ~local_file =
+    log "curl";
     log "dowloading %s" (OpamFilename.to_string remote_file);
     let local_dir = OpamFilename.dirname local_file in
     OpamFilename.mkdir local_dir;
+    OpamGlobals.msg "Downloading %s\n" (OpamFilename.to_string remote_file);
     OpamFilename.download ~overwrite:true remote_file local_dir
 
   let pull_files ~all repo =
+    log "pull-files";
     let local_files =
       if all then OpamFilename.rec_files repo.repo_root
       else local_files repo in
     let state = make_state ~download_index:true repo in
-    OpamGlobals.msg "Synchronizing %s with %s.\n"
-      (OpamFilename.prettify_dir state.local_dir)
-      (OpamFilename.prettify_dir repo.repo_address);
     if state.local_dir <> state.remote_dir then (
       let (--) = OpamFilename.Set.diff in
       let current = OpamFilename.Set.of_list local_files in
@@ -200,19 +210,39 @@ module B = struct
       Up_to_date repo.repo_root
 
   let pull_dir dirname address =
+    log "pull-dir";
     let repo = repo dirname address in
     pull_files ~all:true repo
 
   let pull_repo repo =
+    log "pull-repo";
     ignore (pull_files ~all:false repo)
 
   (* XXX: add a proxy *)
   let pull_file dirname filename =
-    OpamGlobals.msg "Downloading %s.\n" (OpamFilename.prettify filename);
+    log "pull-file";
+    OpamGlobals.msg "Downloading %s\n" (OpamFilename.to_string filename);
     try
       let local_file = OpamFilename.download ~overwrite:true filename dirname in
       Result local_file
     with _ ->
+      Not_available
+
+  let pull_archive repo filename =
+    log "pull-archive";
+    let state = make_state ~download_index:true repo in
+    if OpamFilename.Map.mem filename state.remote_local then (
+      let local_file = OpamFilename.Map.find filename state.remote_local in
+      if is_up_to_date state local_file then
+        Up_to_date local_file
+      else (
+	OpamGlobals.msg "%-10s Downloading %s\n"
+	  (OpamRepositoryName.to_string repo.repo_name)
+	  (OpamFilename.prettify filename);
+	let result = curl ~remote_file:filename ~local_file in
+        Result result
+      )
+    ) else
       Not_available
 
 end
@@ -241,7 +271,7 @@ let make_urls_txt repo_root =
 
 let make_index_tar_gz repo_root =
   OpamFilename.in_dir repo_root (fun () ->
-    let dirs = [ "compilers"; "packages" ] in
+    let dirs = [ "version"; "compilers"; "packages" ] in
     match List.filter Sys.file_exists dirs with
     | [] -> ()
     | d  -> OpamSystem.command ("tar" :: "czf" :: "index.tar.gz" :: d)

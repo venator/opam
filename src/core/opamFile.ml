@@ -170,12 +170,14 @@ module X = struct
     let s_checksum = "checksum"
     let s_git = "git"
     let s_darcs = "darcs"
+    let s_hg = "hg"
 
     let valid_fields = [
       s_archive;
       s_checksum;
       s_git;
       s_darcs;
+      s_hg
     ]
 
     let of_string filename str =
@@ -187,20 +189,30 @@ module X = struct
         OpamFormat.assoc_option s.file_contents s_git OpamFormat.parse_string in
       let darcs =
         OpamFormat.assoc_option s.file_contents s_darcs OpamFormat.parse_string in
+      let hg =
+        OpamFormat.assoc_option s.file_contents s_hg OpamFormat.parse_string in
       let checksum =
         OpamFormat.assoc_option s.file_contents s_checksum OpamFormat.parse_string in
-      let url, kind = match archive, git, darcs with
-        | None  , None  , None   -> OpamGlobals.error_and_exit "Missing URL"
-        | Some x, None  , None   -> x, Some `http
-        | None  , Some x, None   -> x, Some `git
-        | None  , None  , Some x -> x, Some `darcs
-        | _ -> OpamGlobals.error_and_exit "Too many URLS" in
+      let url, kind = match archive, git, darcs, hg with
+        | None  , None  , None  , None ->
+            OpamGlobals.error_and_exit "Missing URL"
+        | Some x, None  , None  , None   ->
+            x, Some `http
+        | None  , Some x, None  , None   ->
+            x, Some `git
+        | None  , None  , Some x, None   ->
+            x, Some `darcs
+        | None  , None  , None  , Some x ->
+            x, Some `hg
+        | _ ->
+            OpamGlobals.error_and_exit "Too many URLS" in
       { url; kind; checksum }
 
     let to_string filename t =
       let url_name = match t.kind with
         | Some `git   -> "git"
         | Some `darcs -> "darcs"
+        | Some `hg    -> "hg"
         | None
         | Some `http  -> "archive"
         | Some `local -> OpamGlobals.error_and_exit
@@ -533,8 +545,8 @@ module X = struct
 
     let empty = {
       repo_name     = OpamRepositoryName.of_string "<none>";
-      repo_address  = OpamFilename.address_of_string "<none>";
-      repo_root     = OpamFilename.Dir.of_string "<none>";
+      repo_address  = OpamFilename.raw_dir "<none>";
+      repo_root     = OpamFilename.raw_dir "<none>";
       repo_kind     = `local;
       repo_priority = 0;
     }
@@ -1450,10 +1462,10 @@ module X = struct
           (OpamCompiler.Version.to_string version)
           (OpamCompiler.Version.to_string version_d);
       let src = OpamFormat.assoc_option s s_src
-          (OpamFormat.parse_string |> OpamFilename.raw_file) in
+          (OpamFormat.parse_string |> OpamFilename.raw) in
       let patches =
         OpamFormat.assoc_list s s_patches
-          (OpamFormat.parse_list (OpamFormat.parse_string |> OpamFilename.raw_file)) in
+          (OpamFormat.parse_list (OpamFormat.parse_string |> OpamFilename.raw)) in
       let configure = OpamFormat.assoc_string_list s s_configure in
       let make = OpamFormat.assoc_string_list s s_make      in
       let build = OpamFormat.assoc_list s s_build OpamFormat.parse_commands in
@@ -1651,7 +1663,7 @@ module Make (F : F) = struct
       F.empty
     )
 
-  let dummy_file = OpamFilename.of_string "<dummy>"
+  let dummy_file = OpamFilename.raw "<dummy>"
 
   let read_from_channel ic =
     try F.of_string dummy_file (OpamSystem.string_of_channel ic)

@@ -25,7 +25,8 @@ let () =
   OpamHTTP.register ();
   OpamGit.register ();
   OpamDarcs.register();
-  OpamLocal.register ()
+  OpamLocal.register ();
+  OpamHg.register ()
 
 let confirm fmt =
   Printf.ksprintf (fun msg ->
@@ -276,7 +277,8 @@ let pinned_path t name =
     match OpamPackage.Name.Map.find name t.pinned with
     | Local d
     | Darcs d
-    | Git d -> Some d
+    | Git d
+    | Hg d -> Some d
     | _     -> None
   else
     None
@@ -285,7 +287,7 @@ let pinned_path t name =
 let is_locally_pinned t name =
   if OpamPackage.Name.Map.mem name t.pinned then
     match OpamPackage.Name.Map.find name t.pinned with
-    | Local _ | Darcs _ | Git _ -> true
+    | Local _ | Darcs _ | Git _ | Hg _ -> true
     | _ -> false
   else
     false
@@ -699,6 +701,21 @@ let reinstall_system_compiler t =
   ) else
     OpamGlobals.exit 1
 
+(* #651 remove dangling symlinks *)
+let fix_symlink file =
+  if OpamFilename.is_symlink file then
+    if OpamFilename.exists file then (
+      OpamGlobals.msg "Fixing incorrect symlink: %s.\n"
+        (OpamFilename.prettify file);
+      let src = OpamFilename.readlink file in
+      OpamFilename.remove file;
+      OpamFilename.copy ~src ~dst:file;
+    ) else (
+      OpamGlobals.msg "Removing broken symlink: %s.\n"
+        (OpamFilename.prettify file);
+      OpamFilename.remove file;
+    )
+
 let load_state ?(save_cache=true) call_site =
   log "LOAD-STATE(%s)" call_site;
   let t0 = Unix.gettimeofday () in
@@ -733,6 +750,12 @@ let load_state ?(save_cache=true) call_site =
   let aliases = OpamFile.Aliases.safe_read (OpamPath.aliases root) in
   let compilers =
     let files = OpamFilename.rec_files (OpamPath.compilers_dir root) in
+    List.iter fix_symlink files;
+    let files =
+      List.fold_left (fun acc file ->
+        if OpamFilename.exists file then file :: acc
+        else acc
+      ) [] files in
     let comp = OpamMisc.filter_map OpamCompiler.of_filename files in
     OpamCompiler.Set.of_list comp in
   let switch, compiler =
@@ -773,7 +796,11 @@ let load_state ?(save_cache=true) call_site =
     ) (OpamPackage.list (OpamPath.opam_dir root)) OpamPackage.Map.empty in
   let opams = match opams with
     | None   ->
-      package_files (fun root nv -> OpamFile.OPAM.read (OpamPath.opam root nv))
+      package_files (fun root nv ->
+        let file = OpamPath.opam root nv in
+        fix_symlink file;
+        OpamFile.OPAM.read file
+      )
     | Some o -> o in
   let descrs =
     package_files (fun root nv ->
@@ -853,11 +880,13 @@ let variables_csh  = "variables.csh"
 let init_sh        = "init.sh"
 let init_zsh       = "init.zsh"
 let init_csh       = "init.csh"
+let init_fish      = "init.fish"
 let init_file = function
   | `sh   -> init_sh
   | `csh  -> init_csh
   | `zsh  -> init_zsh
   | `bash -> init_sh
+  | `fish -> init_fish
 
 let source t ?(interactive_only=false) f =
   let file f = OpamFilename.to_string (OpamPath.init t.root // f) in
@@ -1314,7 +1343,7 @@ let update_dot_profile t dot_profile shell =
   | `no        -> OpamGlobals.msg "  %s is already up-to-date.\n" pretty_dot_profile
   | `otherroot ->
     OpamGlobals.msg
-      "  %s is already configured for an other OPAM root.\n"
+      "  %s is already configured for another OPAM root.\n"
       pretty_dot_profile
   | `yes       ->
     let init_file = init_file shell in
@@ -1392,46 +1421,44 @@ let display_setup t shell dot_profile =
   OpamGlobals.msg "Global configuration:\n";
   List.iter print global_setup
 
-let print_env_warning t user =
-  match
+let eval_string () =
+  let root =
+    if !OpamGlobals.root_dir <> OpamGlobals.default_opam_dir then
+      Printf.sprintf " --root=%s" !OpamGlobals.root_dir
+    else
+      "" in
+  Printf.sprintf "eval `opam config env%s`\n" root
+
+let up_to_date_env t =
+  let changes =
     List.filter
-      (fun (s, v) ->
-        Some v <> try Some (OpamMisc.getenv s) with _ -> None)
-      (get_opam_env t)
-  with
-  | [] -> () (* every variables are correctly set *)
-  | _  ->
-    let eval_string =
-      let root =
-        if !OpamGlobals.root_dir <> OpamGlobals.default_opam_dir then
-          Printf.sprintf " --root=%s" !OpamGlobals.root_dir
-        else
-          "" in
-      Printf.sprintf "eval `opam config env%s`\n" root in
-    let profile_string = match user with
-      | None   -> ""
-      | Some u -> match u.dot_profile with
-        | None -> ""
-        | Some f ->
-          let dot_profile =
-            Printf.sprintf " (for instance %s)" (OpamFilename.prettify f) in
-          Printf.sprintf
-            "2. To correctly configure OPAM for subsequent use, add the following\n\
-                line to your profile file (for instance %s):\n\
-             \n\
-            \      %s\n"
-            dot_profile
-            (source t (init_file u.shell)) in
-    let ocamlinit_string = match user with
-      | None   -> ""
-      | Some u -> if not u.ocamlinit then "" else
-          "3. To avoid issues related to non-system installations of `ocamlfind`\n\
-          \  add the following lines to ~/.ocamlinit (create it if necessary):\n\
+      (fun (s, v) -> Some v <> try Some (OpamMisc.getenv s) with _ -> None)
+      (get_opam_env t) in
+  changes = []
+
+let print_env_warning_at_init t user =
+  if up_to_date_env t then ()
+  else
+    let profile_string = match user.dot_profile with
+      | None -> ""
+      | Some f ->
+        Printf.sprintf
+          "2. To correctly configure OPAM for subsequent use, add the following\n\
+           line to your profile file (for instance %s):\n\
            \n\
-          \      let () =\n\
-          \        try Topdirs.dir_directory (Sys.getenv \"OCAML_TOPLEVEL_PATH\")\n\
-          \        with Not_found -> ()\n\
-          \      ;;\n"
+          \      %s\n"
+          (OpamFilename.prettify f)
+          (source t (init_file user.shell))
+    in
+    let ocamlinit_string =
+      if not user.ocamlinit then "" else
+        "3. To avoid issues related to non-system installations of `ocamlfind`\n\
+        \  add the following lines to ~/.ocamlinit (create it if necessary):\n\
+         \n\
+        \      let () =\n\
+        \        try Topdirs.dir_directory (Sys.getenv \"OCAML_TOPLEVEL_PATH\")\n\
+        \        with Not_found -> ()\n\
+        \      ;;\n\n"
     in
     let line =
       "=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=\n"
@@ -1442,7 +1469,14 @@ let print_env_warning t user =
        \n\
       \      %s\n\
        %s%s%s\n"
-      line eval_string profile_string ocamlinit_string line
+      line (eval_string ()) profile_string ocamlinit_string line
+
+let print_env_warning_at_switch t =
+  if up_to_date_env t then ()
+  else
+    OpamGlobals.msg
+      "# To complete the configuration of OPAM, you need to run:\n%s"
+      (eval_string ())
 
 let update_setup_interactive t shell dot_profile =
   let update dot_profile =
@@ -1461,7 +1495,7 @@ let update_setup_interactive t shell dot_profile =
        other files for best results. You can also make these additions manually\n\
        if you wish.\n\
        \n\
-       If you agree, OPAM will modify:\n\
+       If you agree, OPAM will modify:\n\n\
       \  - %s (or a file you specify) to set the right environment\n\
       \    variables and to load the auto-completion scripts for your shell (%s)\n\
       \    on startup. Specifically, it checks for and appends the following line:\n\
@@ -1677,7 +1711,7 @@ let update_pinned_package t n =
   if OpamPackage.Name.Map.mem n t.pinned then
     let pin = OpamPackage.Name.Map.find n t.pinned in
     match kind_of_pin_option pin with
-    | (`git|`darcs|`local as k) ->
+    | (`git|`darcs|`local|`hg as k) ->
       let path = OpamFilename.raw_dir (path_of_pin_option pin) in
       let dst = OpamPath.Switch.pinned_dir t.root t.switch n in
       let module B = (val OpamRepository.find_backend k: OpamRepository.BACKEND) in

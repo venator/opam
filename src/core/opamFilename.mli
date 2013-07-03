@@ -81,7 +81,7 @@ val create: Dir.t -> Base.t -> t
 val of_basename: Base.t -> t
 
 (** Creation from a raw string (as {i http://<path>}) *)
-val raw_file: string -> t
+val raw: string -> t
 
 (** Prettify a filename:
     - replace /path/to/opam/foo by <opam>/foo
@@ -136,6 +136,9 @@ val link_in: t -> Dir.t -> unit
 
 (** Read a symlinked file *)
 val readlink: t -> t
+
+(** Is a symlink ? *)
+val is_symlink: t -> bool
 
 (** Copy a file *)
 val copy: src:t -> dst:t -> unit

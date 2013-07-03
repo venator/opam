@@ -1,4 +1,9 @@
 1.0.1 (trunk)
+* OPAM works even when the current directory has been deleted
+* speed-up invocation of `opam config var VARIABLE` when variable is simple (eg. `prefix`, `lib`, ...)
+* `opam list` now display only the installed packages. Use `opam list -a` to get the previous behavior.
+* Inverse the depext tag selection (useful for `ocamlot`)
+* Add a `--sexp` option to `opam config env` to load the configuration under emacs
 * Purge `~/.opam/log` on each invocation of OPAM
 * System compiler with versions such as `version+patches` are now handled as if this was simply `version`
 * New `OpamVCS` functor to generate OPAM backends
@@ -142,7 +147,7 @@
 
 0.7.3 [Sep 2012]
 * Better user-message when no solution is found
-* Improve the minimality of installed packages 
+* Improve the minimality of installed packages
 
 0.7.2 [Sep 2012]
 * Fix regression in init introcuced in 0.7.0

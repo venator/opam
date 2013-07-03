@@ -201,8 +201,11 @@ let get_archive t nv =
         | Some _ -> ()
       end;
       let src = OpamPath.Repository.archive s.pkg_repo nv in
-      OpamFilename.move ~src ~dst;
-      Some dst
+      if OpamFilename.exists src then (
+        OpamFilename.move ~src ~dst;
+        Some dst;
+      ) else
+        None
 
 (* Prepare the package build:
    * apply the patches
@@ -347,14 +350,16 @@ let remove_package_aux t ~metadata ~rm_build nv =
 
   (* Run the remove script *)
   let opam_f = OpamPath.opam t.root nv in
-  if OpamFilename.exists opam_f then (
+  OpamGlobals.msg "Removing %s.\n" (OpamPackage.to_string nv);
+
+  if not (OpamFilename.exists opam_f) then
+    OpamGlobals.msg "  No OPAM file has been found!\n"
+  else (
     let opam = OpamState.opam t nv in
     let env = compilation_env t opam in
     match OpamState.filter_commands t (OpamFile.OPAM.remove opam) with
-    | []     ->
-      OpamGlobals.msg "Uninstalling %s.\n" (OpamPackage.to_string nv);
+    | []     -> ()
     | remove ->
-      OpamGlobals.msg "Uninstalling %s:\n" (OpamPackage.to_string nv);
       let p_build = OpamPath.Switch.build t.root t.switch nv in
       (* We try to run the remove scripts in the folder where it was
          extracted If it does not exist, we try to download and
@@ -466,8 +471,12 @@ let remove_package t ~metadata ~rm_build nv =
      relying on uncontrollable ways of uninstalling *)
   if not !OpamGlobals.fake then
     remove_package_aux t ~metadata ~rm_build nv
+  else
+    OpamGlobals.msg "(simulation) Removing %s.\n" (OpamPackage.to_string nv)
 
-(* Uninstall all the current packages in a solution  *)
+(* Remove all the packages appearing in a solution (and which need to
+   be removed, eg. because of a direct uninstall action or because of
+   recompilation.  *)
 let remove_all_packages t ~metadata sol =
   let open PackageActionGraph in
   let deleted = ref [] in
@@ -867,3 +876,6 @@ let build_and_install_package t ~metadata nv =
   if not !OpamGlobals.fake then
     (* Proceed to build and install *)
     build_and_install_package_aux t ~metadata nv
+  else
+    OpamGlobals.msg "(simulation) Building and installing %s.\n"
+      (OpamPackage.to_string nv)

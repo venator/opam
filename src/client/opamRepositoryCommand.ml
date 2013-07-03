@@ -48,7 +48,8 @@ let print_updated_compilers ~new_compilers ~updated_compilers ~deleted_compilers
     deleted_compilers
 
 let relink_compilers t ~verbose old_index =
-  log "relink-compilers";
+  OpamGlobals.msg "Updating %s/\n"
+    (OpamFilename.prettify_dir (OpamPath.compilers_dir t.root));
   let old_index = OpamCompiler.Map.filter (fun comp _ ->
       OpamFilename.exists (OpamPath.compiler t.root comp)
     ) old_index in
@@ -63,9 +64,14 @@ let relink_compilers t ~verbose old_index =
         || OpamCompiler.Map.find comp old_index <> state
       ) compiler_index in
   let deleted_compilers =
-    OpamCompiler.Map.filter (fun comp _ ->
-        not (OpamCompiler.Map.mem comp compiler_index)
-      ) old_index in
+    OpamCompiler.Set.fold (fun comp map ->
+        if comp = OpamCompiler.system
+        || OpamCompiler.Map.mem comp compiler_index
+        || OpamState.compiler_installed t comp then
+          map
+        else
+          OpamCompiler.Map.add comp true map
+      ) t.compilers OpamCompiler.Map.empty in
 
   (* Delete compiler descritions, but keep the ones who disapeared and
      are still installed *)
@@ -90,11 +96,11 @@ let relink_compilers t ~verbose old_index =
       let comp_descr = OpamPath.compiler_descr t.root comp in
       OpamFilename.remove comp_file;
       OpamFilename.remove comp_descr;
-      OpamFilename.link ~src:s.comp_file ~dst:comp_file;
+      OpamFilename.copy ~src:s.comp_file ~dst:comp_file;
       match s.comp_descr with
       | None   -> ()
       | Some d ->
-        if OpamFilename.exists d then OpamFilename.link ~src:d ~dst:comp_descr
+        if OpamFilename.exists d then OpamFilename.copy ~src:d ~dst:comp_descr
   ) updated_compilers;
 
   if verbose then
@@ -210,8 +216,9 @@ let update_pinned_packages t ~verbose packages =
 (* Update the package contents, display the new packages and update
    reinstall *)
 let relink_packages t ~verbose old_index =
-  log "relink-packages";
-
+  OpamGlobals.msg "Updating %s/ and %s/\n"
+    (OpamFilename.prettify_dir (OpamPath.opam_dir t.root))
+    (OpamFilename.prettify_dir (OpamPath.descr_dir t.root));
   let old_index = OpamPackage.Map.filter (fun nv _ ->
       OpamFilename.exists (OpamPath.opam t.root nv)
     ) old_index in
@@ -227,10 +234,15 @@ let relink_packages t ~verbose old_index =
         not (OpamPackage.Map.mem nv old_index)
         || OpamPackage.Map.find nv old_index <> state
       ) package_index in
+  let all_installed = OpamState.all_installed t in
   let deleted_packages =
-    OpamPackage.Map.filter (fun nv _ ->
-        not (OpamPackage.Map.mem nv package_index)
-      ) old_index in
+    OpamPackage.Set.fold (fun nv map ->
+        if OpamPackage.Map.mem nv package_index
+        || OpamPackage.Set.mem nv all_installed then
+          map
+        else
+          OpamPackage.Map.add nv true map
+      ) t.packages OpamPackage.Map.empty in
 
   (* Check all the dependencies exist *)
   let all_packages =
@@ -274,16 +286,14 @@ let relink_packages t ~verbose old_index =
     | Some f -> fn f in
 
   (* Remove the deleted packages (which are not yet unininstalled) *)
-  let all_installed = OpamState.all_installed t in
   OpamPackage.Map.iter (fun nv _ ->
-    if not (OpamPackage.Set.mem nv all_installed) then
-      match OpamState.package_repository_state t nv with
-      | None   -> ()
-      | Some s ->
-        OpamFilename.remove s.pkg_opam;
-        apply OpamFilename.remove s.pkg_descr;
-        apply OpamFilename.remove s.pkg_archive;
-  ) deleted_packages;
+      let remove fn =
+        let file = fn t.root nv in
+        if OpamFilename.exists file then OpamFilename.remove file in
+      remove OpamPath.opam;
+      remove OpamPath.descr;
+      remove OpamPath.archive;
+    ) deleted_packages;
 
   (* Create symbolic links from $repo dirs to main dir *)
   OpamPackage.Map.iter (fun nv _ ->
@@ -297,11 +307,11 @@ let relink_packages t ~verbose old_index =
         OpamFilename.remove pkg_opam;
         OpamFilename.remove pkg_descr;
         OpamFilename.remove pkg_archive;
-        let link src ~dst =
-          if OpamFilename.exists src then OpamFilename.link ~src ~dst in
-        link state.pkg_opam ~dst:pkg_opam;
-        apply (link ~dst:pkg_descr)   state.pkg_descr ;
-        apply (link ~dst:pkg_archive) state.pkg_archive;
+        let copy src ~dst =
+          if OpamFilename.exists src then OpamFilename.copy ~src ~dst in
+        copy state.pkg_opam ~dst:pkg_opam;
+        apply (copy ~dst:pkg_descr)   state.pkg_descr ;
+        apply (copy ~dst:pkg_archive) state.pkg_archive;
       );
   ) updated_packages;
 
@@ -326,9 +336,11 @@ let compare_repo t r1 r2 =
     (OpamState.find_repository t r2)
 
 let update_index t =
-  log "update-index";
+  let file = OpamPath.repo_index t.root in
+  OpamGlobals.msg "Updating %s\n" (OpamFilename.prettify file);
+
   let repositories = OpamState.sorted_repositories t in
-  let repo_index = OpamFile.Repo_index.safe_read (OpamPath.repo_index t.root) in
+  let repo_index = OpamFile.Repo_index.safe_read file in
 
   (* All the existing packages *)
   let packages = ref OpamPackage.Set.empty in
@@ -405,56 +417,66 @@ let update_config t repos =
   let new_config = OpamFile.Config.with_repositories t.config repos in
   OpamFile.Config.write (OpamPath.config t.root) new_config
 
+let relink_all t ~verbose fn =
+  log "relink-all";
+  let old_compiler_index = OpamState.compiler_state_index t in
+  let old_package_index = OpamState.package_state_index t in
+  fn t;
+  let _ = update_index t in
+  let t = OpamState.load_state ~save_cache:false "relink-all" in
+  relink_compilers t ~verbose old_compiler_index;
+  relink_packages t ~verbose old_package_index;
+  OpamState.rebuild_state_cache ()
+
 (* Remove any remaining of [repo] from OPAM state *)
 let cleanup t repo =
   log "cleanup %s" (OpamRepositoryName.to_string repo.repo_name);
-  let repos = OpamRepositoryName.Map.keys t.repositories in
-  update_config t (List.filter ((<>) repo.repo_name) repos);
-  let t = OpamState.load_state "repository-cleanup-repo" in
-  let _ = update_index t in
-  let prefix, packages = OpamRepository.packages repo in
-  OpamPackage.Set.iter (fun nv ->
-      let prefix = OpamRepository.find_prefix prefix nv in
-      let relink r g =
-        let r = r repo prefix nv in
-        let g = g t.root nv in
-        if OpamFilename.exists g && OpamFilename.readlink g = r then
-          OpamFilename.move ~src:r ~dst:g in
-      relink OpamPath.Repository.opam OpamPath.opam;
-      relink OpamPath.Repository.descr OpamPath.descr;
-      relink (fun r _ -> OpamPath.Repository.archive r) OpamPath.archive;
-    ) packages;
-  let compilers = OpamRepository.compilers repo in
-  OpamCompiler.Map.iter (fun comp (comp_f, descr_f) ->
-      let relink r g =
-        if OpamFilename.exists g && OpamFilename.readlink g = r then
-          OpamFilename.move ~src:r ~dst:g in
-      relink comp_f (OpamPath.compiler t.root comp);
-      match descr_f with
-      | Some descr_f -> relink descr_f (OpamPath.compiler_descr t.root comp)
-      | None         -> ()
-    ) compilers;
-
-  OpamFilename.rmdir repo.repo_root;
-  OpamState.rebuild_state_cache ()
+  relink_all t ~verbose:true (fun t ->
+      let prefix, packages = OpamRepository.packages repo in
+      OpamPackage.Set.iter (fun nv ->
+          let prefix = OpamRepository.find_prefix prefix nv in
+          let relink r g =
+            let r = r repo prefix nv in
+            let g = g t.root nv in
+            if OpamFilename.exists g && OpamFilename.readlink g = r then
+              OpamFilename.move ~src:r ~dst:g in
+          relink OpamPath.Repository.opam OpamPath.opam;
+          relink OpamPath.Repository.descr OpamPath.descr;
+          relink (fun r _ -> OpamPath.Repository.archive r) OpamPath.archive;
+        ) packages;
+      let compilers = OpamRepository.compilers repo in
+      OpamCompiler.Map.iter (fun comp (comp_f, descr_f) ->
+          let relink r g =
+            if OpamFilename.exists g && OpamFilename.readlink g = r then
+              OpamFilename.move ~src:r ~dst:g in
+          relink comp_f (OpamPath.compiler t.root comp);
+          match descr_f with
+          | Some descr_f -> relink descr_f (OpamPath.compiler_descr t.root comp)
+          | None         -> ()
+        ) compilers;
+      let repos = OpamRepositoryName.Map.keys t.repositories in
+      update_config t (List.filter ((<>) repo.repo_name) repos);
+      OpamFilename.rmdir repo.repo_root;
+    )
 
 let priority repo_name ~priority =
   log "repository-priority";
   let t = OpamState.load_state ~save_cache:false "repository-priority" in
-  let repo = OpamState.find_repository t repo_name in
-  let config_f = OpamPath.Repository.config repo in
-  let config = OpamFile.Repo_config.read config_f in
-  let config = { config with repo_priority = priority } in
-  OpamFile.Repo_config.write config_f config;
-  let repo_index_f = OpamPath.repo_index t.root in
-  let repo_index = OpamFile.Repo_index.safe_read (OpamPath.repo_index t.root) in
-  let repo_index =
-    OpamPackage.Name.Map.map (List.filter ((<>)repo_name)) repo_index in
-  let repo_index = OpamPackage.Name.Map.filter (fun _ rs -> rs<>[]) repo_index in
-  OpamFile.Repo_index.write repo_index_f repo_index;
-  let t = OpamState.load_state ~save_cache:false "repository-3" in
-  let _ = update_index t in
-  OpamState.rebuild_state_cache ()
+  relink_all t ~verbose:true (fun t ->
+      let repo = OpamState.find_repository t repo_name in
+      let config_f = OpamPath.Repository.config repo in
+      let config =
+        let config = OpamFile.Repo_config.read config_f in
+        { config with repo_priority = priority } in
+      OpamFile.Repo_config.write config_f config;
+      let repo_index_f = OpamPath.repo_index t.root in
+      let repo_index =
+        let repo_index = OpamFile.Repo_index.safe_read (OpamPath.repo_index t.root) in
+        let repo_index =
+          OpamPackage.Name.Map.map (List.filter ((<>)repo_name)) repo_index in
+        OpamPackage.Name.Map.filter (fun _ rs -> rs<>[]) repo_index in
+      OpamFile.Repo_index.write repo_index_f repo_index;
+    )
 
 let add name kind address ~priority:prio =
   log "repository-add";

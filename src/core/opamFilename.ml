@@ -132,7 +132,7 @@ let of_basename basename =
   let dirname = Dir.of_string "." in
   { dirname; basename }
 
-let raw_file str =
+let raw str =
   let dirname = raw_dir (Filename.dirname str) in
   let basename = Base.of_string (Filename.basename str) in
   create dirname basename
@@ -203,7 +203,14 @@ let readlink src =
     try of_string (Unix.readlink (to_string src))
     with _ -> src
   else
-    OpamSystem.internal_error "%s does not exit." (to_string src)
+    OpamSystem.internal_error "%s does not exist." (to_string src)
+
+let is_symlink src =
+  try
+    let s = Unix.lstat (to_string src) in
+    s.Unix.st_kind = Unix.S_LNK
+  with _ ->
+    OpamSystem.internal_error "%s does not exist." (to_string src)
 
 let process_in fn src dst =
   let src_s = to_string src in

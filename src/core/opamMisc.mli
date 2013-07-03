@@ -173,6 +173,9 @@ val sub_at: int -> string -> string
 (** Cut a git string of the form /git/address[#SHA] into (address * commit) *)
 val git_of_string: string -> string * string option
 
+(** same as [git_of_string] but for mercurial paths *)
+val hg_of_string: string -> string * string option
+
 (** {2 Misc} *)
 
 (** Remove from a ':' separated list of string the one with the given prefix *)
@@ -221,7 +224,7 @@ val uname_s: unit -> string option
 val uname_m: unit -> string option
 
 (** Guess the shell compat-mode *)
-val guess_shell_compat: unit -> [`csh|`zsh|`sh|`bash]
+val guess_shell_compat: unit -> [`csh|`zsh|`sh|`bash|`fish]
 
 (** Guess the location of .profile *)
-val guess_dot_profile: [`csh|`zsh|`sh|`bash] -> string
+val guess_dot_profile: [`csh|`zsh|`sh|`bash|`fish] -> string
