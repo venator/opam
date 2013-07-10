@@ -1072,9 +1072,9 @@ module X = struct
     }
 
     let create
-        ?(bin = []) ?(lib = []) ?(toplevel = []) ?(share = [])
-        ?(doc = []) ?(misc = []) () =
-      { lib; bin; toplevel; misc; share; doc }
+        ?(bin = []) ?(lib = []) ?(toplevel = []) ?(stublibs = [])
+        ?(share = []) ?(doc = []) ?(man = []) ?(misc = []) () =
+      { lib; bin; toplevel; stublibs; misc; share; doc; man }
 
     let bin t = t.bin
     let lib t = t.lib

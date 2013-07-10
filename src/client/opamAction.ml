@@ -701,15 +701,18 @@ let dot_install_of_files (file_in_dirs, misc_files) =
   let assoc dir =
     try List.assoc dir file_in_dirs_str with Not_found -> []
   in
-  let to_basename f = {optional = false; c = OpamFilename.Base.of_string f} in
-  let to_basename_bin f = (to_basename f, None) in
-  let to_basename_misc f = (to_basename f, OpamFilename.of_string f) in
+  let to_basename_aux f =
+    {optional = false; c = OpamFilename.Base.of_string f} in
+  let to_basename f = (to_basename_aux f, None) in
+  let to_basename_misc f = (to_basename_aux f, OpamFilename.of_string f) in
   OpamFile.Dot_install.create
-      ~bin: (List.map to_basename_bin (assoc "bin"))
+      ~bin: (List.map to_basename (assoc "bin"))
       ~lib: (List.map to_basename (assoc "lib"))
       ~toplevel: (List.map to_basename (assoc "toplevel"))
+      ~stublibs: (List.map to_basename (assoc "stublibs"))
       ~share: (List.map to_basename (assoc "share"))
       ~doc: (List.map to_basename (assoc "doc"))
+      ~man: (List.map to_basename (assoc "man"))
       ~misc: (List.map to_basename_misc misc_files_str)
       ()
 
@@ -731,8 +734,10 @@ let install_dirs t nv =
     ("bin", OpamPath.Switch.bin t.root t.switch);
     ("lib", OpamPath.Switch.lib t.root t.switch n);
     ("toplevel", OpamPath.Switch.toplevel t.root t.switch);
+    ("stublibs", OpamPath.Switch.stublibs t.root t.switch);
     ("share", OpamPath.Switch.share t.root t.switch n);
-    ("doc", OpamPath.Switch.doc t.root t.switch n)
+    ("doc", OpamPath.Switch.doc t.root t.switch n);
+    ("man", OpamPath.Switch.man_dir t.root t.switch);
   ]
 
 (* Build and install a package. In case of error, simply return the

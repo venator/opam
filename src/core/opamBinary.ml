@@ -80,11 +80,7 @@ let files_of_package path switch package =
 
 
   let dot_install = OpamFile.Dot_install.safe_read filename in
-  let aux_simple prefix acc basename =
-    (* Don't include optional files *)
-    if basename.optional then acc
-    else prefix // (OpamFilename.Base.to_string basename.c) :: acc in
-  let aux_bin acc (basename, rename_opt) =
+  let aux acc (basename, rename_opt) =
     if basename.optional then acc
     else match rename_opt with
       | None -> OpamFilename.of_string
@@ -95,18 +91,22 @@ let files_of_package path switch package =
     if basename.optional then acc
     else prefix // (OpamFilename.to_string filename) :: acc in
   let binaries =
-    List.fold_left aux_bin [] (OpamFile.Dot_install.bin dot_install) in
+    List.fold_left aux [] (OpamFile.Dot_install.bin dot_install) in
+  let libs =
+    List.fold_left aux [] (OpamFile.Dot_install.lib dot_install) in
+  let toplevels =
+    List.fold_left aux [] (OpamFile.Dot_install.toplevel dot_install) in
+  let stublibs =
+    List.fold_left aux [] (OpamFile.Dot_install.stublibs dot_install) in
+  let shares =
+    List.fold_left aux [] (OpamFile.Dot_install.share dot_install) in
+  let docs =
+    List.fold_left aux [] (OpamFile.Dot_install.doc dot_install) in
+  let mans =
+    List.fold_left aux [] (OpamFile.Dot_install.man dot_install) in
   let extlibs =
     extlib_of_ldd (ldd_of_files (filter_natives binaries)) in
-  binaries
-  @ List.fold_left (aux_simple (OpamPath.Switch.lib path switch name)) []
-      (OpamFile.Dot_install.lib dot_install)
-  @ List.fold_left (aux_simple (OpamPath.Switch.toplevel path switch)) []
-      (OpamFile.Dot_install.toplevel dot_install)
-  @ List.fold_left (aux_simple (OpamPath.Switch.share path switch name)) []
-      (OpamFile.Dot_install.share dot_install)
-  @ List.fold_left (aux_simple (OpamPath.Switch.doc path switch name)) []
-      (OpamFile.Dot_install.doc dot_install)
+  binaries @ libs @ toplevels @ stublibs @ shares @ docs @ mans
   @ List.fold_left (aux_misc (OpamPath.Switch.root path switch)) []
       (OpamFile.Dot_install.misc dot_install),
   (OpamPackage.Extlib.Set.elements extlibs)

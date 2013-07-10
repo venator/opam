@@ -304,12 +304,14 @@ module Dot_install: sig
 
   (** Create a dot install file with given fields *)
   val create:
-      ?bin: (basename optional * basename option) list ->
-      ?lib: basename optional list ->
-      ?toplevel: basename optional list ->
-      ?share: basename optional list ->
-      ?doc: basename optional list ->
-      ?misc: (basename optional * filename) list ->
+      ?bin      : (basename optional * basename option) list ->
+      ?lib      : (basename optional * basename option) list ->
+      ?toplevel : (basename optional * basename option) list ->
+      ?stublibs : (basename optional * basename option) list ->
+      ?share    : (basename optional * basename option) list ->
+      ?doc      : (basename optional * basename option) list ->
+      ?man      : (basename optional * basename option) list ->
+      ?misc     : (basename optional * filename) list ->
       unit -> t
 
   (** List of files to install in $bin/ *)
