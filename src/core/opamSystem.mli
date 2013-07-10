@@ -144,6 +144,9 @@ val extract: string -> string -> unit
     [dirname]. [dirname] should already exists. *)
 val extract_in: string -> string -> unit
 
+(** [list_archive filename] returns the files stored in a tar archive. *)
+val list_archive: string -> string -> string list
+
 (** [archive filename files dirname] create the archive [filename] within the
 [dirname] directory, containing the files listed in [files]. *)
 val archive: string -> string list -> string -> unit

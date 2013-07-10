@@ -755,25 +755,33 @@ let build_and_install_package_aux t ~metadata nv =
       | _, None -> "", None
     in
 
-    let bin_checksum = match binary_package_opt with
+    let dirs = install_dirs t nv in
+
+    (* [bin_info] is an optional pair of (bin_checksum * dot_install_files) *)
+    let bin_info = match binary_package_opt with
 
     (* A binary package has been found *)
     | Some (bin_pkg, bin_checksum) -> (
+      let open OpamFilename.OP in
       let bin_pkg_str = OpamFilename.to_string bin_pkg in
       OpamGlobals.msg "Extracting binary package.\n";
-      OpamSystem.extract_in bin_pkg_str
-        (OpamFilename.Dir.to_string (OpamPath.Switch.root t.root t.switch));
-      Some bin_checksum
+      let switch_root = OpamPath.Switch.root t.root t.switch in
+      let switch_root_str = OpamFilename.Dir.to_string switch_root in
+      let installed_files = List.map (fun f -> switch_root // f)
+        (OpamSystem.list_archive bin_pkg_str switch_root_str) in
+      let dot_install_files = sort_files_in_dirs ~dirs installed_files in
+      OpamSystem.extract_in bin_pkg_str switch_root_str;
+      Some (bin_checksum, dot_install_files)
     )
 
     (* No binary package has been found, build it *)
     | None -> (
 
-      let dirs, init_filetree =
+      let init_filetree =
         if !OpamGlobals.binary then
-          install_dirs t nv, map_stats (list_files_sorted t)
+          map_stats (list_files_sorted t)
         else
-          [], []
+          []
       in
 
       (* This one can raises an exception (for insance an user's CTRL-C
@@ -828,13 +836,6 @@ let build_and_install_package_aux t ~metadata nv =
         end
         else begin
 
-          (* Create a .install containing installed files. *)
-          (* TODO: move the .install creation outside of the binary package 
-             creation part; use tar output to list installed files in this case *)
-          let dot_install_files = sort_files_in_dirs ~dirs installed_files in
-          let install = dot_install_of_files dot_install_files in
-          write_dot_install t nv install;
-
           (* Create a binary package. *)
           match pkg_state_opt with
           | None -> None
@@ -846,6 +847,7 @@ let build_and_install_package_aux t ~metadata nv =
 
             (* Call ldd on binaries and write the extlib file *)
             (* TODO: check if binaries exists outside of $OPAM/$OVERSION/bin *)
+            let dot_install_files = sort_files_in_dirs ~dirs installed_files in
             let binaries = binaries_of_installed_files dot_install_files in
             let natives = OpamBinary.filter_natives binaries in
             let ldd = OpamBinary.ldd_of_files natives in
@@ -853,7 +855,7 @@ let build_and_install_package_aux t ~metadata nv =
                 (OpamPath.binary_extlib t.root nv env_checksum bin_checksum)
                 (OpamBinary.extlib_of_ldd ldd);
 
-            Some bin_checksum
+            Some (bin_checksum, dot_install_files)
           end
       )
       (* The package hasn't been installed from a pre-compiled archive,
@@ -863,15 +865,22 @@ let build_and_install_package_aux t ~metadata nv =
 
     ) in
 
+    match bin_info with
+    | None -> ()
+    | Some (_, dot_install_files) ->
+      (* Create a .install containing installed files. *)
+      let install = dot_install_of_files dot_install_files in
+      write_dot_install t nv install;
+
     (* update the metadata *)
     if metadata then (
       let installed = OpamPackage.Set.add nv t.installed in
       let installed_roots = OpamPackage.Set.add nv t.installed_roots in
       let reinstall = OpamPackage.Set.remove nv t.reinstall in
       let installed_binaries =
-        match bin_checksum with
+        match bin_info with
         | None -> t.installed_binaries
-        | Some c ->
+        | Some (c, _) ->
           OpamPackage.Name.Map.add (OpamPackage.name nv) c t.installed_binaries
       in
       update_metadata t ~installed ~installed_roots ~reinstall

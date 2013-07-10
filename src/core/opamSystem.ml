@@ -343,9 +343,9 @@ module Tar = struct
       (fun suff -> Filename.check_suffix f suff)
       (List.concat (List.rev_map fst extensions))
 
-  let extract_function file =
+  let tar_aux cmd action file =
     let command c dir =
-      command [ "tar" ; Printf.sprintf "xf%c" c ; file; "-C" ; dir ] in
+      cmd [ "tar" ; Printf.sprintf "%cf%c" action c ; file; "-C" ; dir ] in
 
     let ext =
       List.fold_left
@@ -364,12 +364,17 @@ module Tar = struct
       | None   -> None
       | Some c -> Some (command c)
 
+
+  let extract_function file = tar_aux command 'x' file
+
+  let list_function file = tar_aux read_command_output 't' file
+
   let create_function archive files =
     let command c dir =
       command ([ "tar" ; Printf.sprintf "cf%c" c ; archive; "-C" ; dir ]
         @ files)
     in
-    (* TODO: handle more extensions *)
+    (* TODO: handle different compression schemes if necessary *)
     Some (command 'z')
 
 end
@@ -391,12 +396,17 @@ let extract file dst =
       | _   -> internal_error "The archive contains multiple root directories."
   )
 
-let extract_in file dst =
+let tar_aux cmd file dst =
   if not (Sys.file_exists dst) then
     internal_error "%s does not exist." file;
-  match Tar.extract_function file with
+  match cmd file with
   | None   -> internal_error "%s is not a valid tar archive." file
   | Some f -> f dst
+
+let extract_in file dst = tar_aux Tar.extract_function file dst
+
+(* List the files in a tar archive *)
+let list_archive file dst = tar_aux Tar.list_function file dst
 
 let archive filename files dst =
   match Tar.create_function filename files with
