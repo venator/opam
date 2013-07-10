@@ -316,16 +316,22 @@ module Dot_install: sig
   val bin:  t -> (basename optional * basename option) list
 
   (** List of files to install in $lib/ *)
-  val lib:  t -> basename optional list
+  val lib:  t -> (basename optional * basename option) list
 
   (** List of toplevel files *)
-  val toplevel: t -> basename optional list
+  val toplevel: t -> (basename optional * basename option) list
+
+  (** C bindings *)
+  val stublibs: t -> (basename optional * basename option) list
 
   (** List of shared files *)
-  val share: t -> basename optional list
+  val share: t -> (basename optional * basename option) list
 
   (** List of doc files *)
-  val doc: t -> basename optional list
+  val doc: t -> (basename optional * basename option) list
+
+  (** Man pages *)
+  val man: t -> (basename optional * basename option) list
 
   (** List of other files to install *)
   val misc: t -> (basename optional * filename) list
@@ -442,7 +448,7 @@ module URL: sig
 end
 
 (** {2 urls.txt file *} *)
-module Urls_txt: IO_FILE with type t = file_attribute_set
+module File_attributes: IO_FILE with type t = file_attribute_set
 
 (** List of filenames *)
 module Filenames: IO_FILE with type t = filename_set

@@ -124,17 +124,23 @@ let install_package t nv =
 
       (* Install a list of files *)
       let install_files dst_fn files_fn =
-        let dst = dst_fn t.root t.switch name in
+        let dst_dir = dst_fn t.root t.switch name in
         let files = files_fn install in
-        if not (OpamFilename.exists_dir dst) then (
-          log "creating %s" (OpamFilename.Dir.to_string dst);
-          OpamFilename.mkdir dst;
+        if not (OpamFilename.exists_dir dst_dir) then (
+          log "creating %s" (OpamFilename.Dir.to_string dst_dir);
+          OpamFilename.mkdir dst_dir;
         );
-        List.iter (fun b ->
-          if check ~src:build_dir ~dst b then
-            let file = OpamFilename.create build_dir b.c in
-            OpamFilename.copy_in file dst
-        ) files in
+        List.iter (fun (base, dst) ->
+            let src_file = OpamFilename.create build_dir base.c in
+            let dst_file = match dst with
+              | None   -> OpamFilename.create dst_dir (OpamFilename.basename src_file)
+              | Some d -> OpamFilename.create dst_dir d in
+            if check ~src:build_dir ~dst:dst_dir base then
+              OpamFilename.copy ~src:src_file ~dst:dst_file;
+          ) files in
+
+      (* bin *)
+      install_files (fun r s _ -> OpamPath.Switch.bin r s) OpamFile.Dot_install.bin;
 
       (* lib *)
       install_files OpamPath.Switch.lib OpamFile.Dot_install.lib;
@@ -143,22 +149,17 @@ let install_package t nv =
       install_files (fun r s _ -> OpamPath.Switch.toplevel r s)
         OpamFile.Dot_install.toplevel;
 
+      install_files (fun r s _ -> OpamPath.Switch.stublibs r s)
+        OpamFile.Dot_install.stublibs;
+
+      (* Man pages *)
+      install_files (fun r s _ -> OpamPath.Switch.man_dir r s) OpamFile.Dot_install.man;
+
       (* Shared files *)
       install_files OpamPath.Switch.share OpamFile.Dot_install.share;
 
       (* Documentation files *)
       install_files OpamPath.Switch.doc OpamFile.Dot_install.doc;
-
-      (* bin *)
-      List.iter (fun (base, dst) ->
-        let dst_dir = OpamPath.Switch.bin t.root t.switch in
-        let src_file = OpamFilename.create build_dir base.c in
-        let dst_file = match dst with
-          | None   -> OpamFilename.create dst_dir (OpamFilename.basename src_file)
-          | Some d -> OpamFilename.create dst_dir d in
-        if check ~src:build_dir ~dst:dst_dir base then
-          OpamFilename.copy ~src:src_file ~dst:dst_file;
-      ) (OpamFile.Dot_install.bin install);
 
       (* misc *)
       List.iter
@@ -413,18 +414,28 @@ let remove_package_aux t ~metadata ~rm_build nv =
       ()
   end;
 
-  (* Remove the binaries *)
-  log "Removing the binaries";
   let install =
     OpamFile.Dot_install.safe_read (OpamPath.Switch.install t.root t.switch name) in
-  List.iter (fun (base, dst) ->
-    let dir = OpamPath.Switch.bin t.root t.switch in
-    let dummy_src = OpamFilename.create dir base.c in
-    let dst = match dst with
-      | None   -> OpamFilename.create dir (OpamFilename.basename dummy_src)
-      | Some b -> OpamFilename.create dir b in
-    OpamFilename.remove dst
-  ) (OpamFile.Dot_install.bin install);
+
+  let remove_files dst_fn files =
+    let files = files install in
+    List.iter (fun (base, dst) ->
+        let dst_dir = dst_fn t.root t.switch in
+        let dst_file = match dst with
+          | None   -> OpamFilename.create dst_dir base.c
+          | Some b -> OpamFilename.create dst_dir b in
+        OpamFilename.remove dst_file
+      ) files in
+
+  (* Remove the binaries *)
+  log "Removing the binaries";
+  remove_files OpamPath.Switch.bin OpamFile.Dot_install.bin;
+
+  (* Remove the C bindings *)
+  remove_files OpamPath.Switch.stublibs OpamFile.Dot_install.stublibs;
+
+  (* Remove man pages *)
+  remove_files OpamPath.Switch.man_dir OpamFile.Dot_install.man;
 
   (* Remove the misc files *)
   log "Removing the misc files";

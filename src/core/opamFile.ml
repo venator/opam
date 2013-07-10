@@ -125,9 +125,9 @@ module X = struct
 
   end
 
-  module Urls_txt = struct
+  module File_attributes = struct
 
-    let internal = "urls-txt"
+    let internal = "file_attributes"
 
     type t = file_attribute_set
 
@@ -1051,10 +1051,12 @@ module X = struct
 
     type t =  {
       bin     : (basename optional * basename option) list;
-      lib     : basename optional list;
-      toplevel: basename optional list;
-      share   : basename optional list;
-      doc     : basename optional list;
+      lib     : (basename optional * basename option) list;
+      toplevel: (basename optional * basename option) list;
+      stublibs: (basename optional * basename option) list;
+      share   : (basename optional * basename option) list;
+      doc     : (basename optional * basename option) list;
+      man     : (basename optional * basename option) list;
       misc    : (basename optional * filename) list;
     }
 
@@ -1062,8 +1064,10 @@ module X = struct
       lib      = [];
       bin      = [];
       toplevel = [];
+      stublibs = [];
       misc     = [];
       share    = [];
+      man      = [];
       doc      = [];
     }
 
@@ -1075,25 +1079,39 @@ module X = struct
     let bin t = t.bin
     let lib t = t.lib
     let toplevel t = t.toplevel
+    let stublibs t = t.stublibs
     let misc t = t.misc
     let share t = t.share
     let doc t = t.doc
+    let man t =
+      List.map (fun (src, dst) ->
+          src,
+          match dst with
+          | None ->
+            let base = Filename.basename (OpamFilename.Base.to_string src.c) in
+            Some (OpamFilename.Base.of_string (Filename.concat "man3" base))
+          | _    -> dst
+        ) t.man
 
     let s_lib      = "lib"
     let s_bin      = "bin"
     let s_misc     = "misc"
     let s_toplevel = "toplevel"
+    let s_stublibs = "stublibs"
     let s_share    = "share"
     let s_doc      = "doc"
+    let s_man      = "man"
 
     let valid_fields = [
       s_opam_version;
       s_lib;
       s_bin;
       s_toplevel;
+      s_stublibs;
       s_misc;
       s_share;
       s_doc;
+      s_man;
     ]
 
     (* Filenames starting by ? are not always present. *)
@@ -1111,7 +1129,7 @@ module X = struct
       Printf.sprintf "%s%s" o (OpamFilename.Base.to_string t.c)
 
     let to_string filename t =
-      let mk_bin =
+      let mk =
         let aux (src, opt) =
           let src = String (string_of_optional src) in
           match opt with
@@ -1124,14 +1142,13 @@ module X = struct
           let dst = String (OpamFilename.to_string dst) in
           List [src; dst] in
         OpamFormat.make_list aux in
-      let mk =
-        OpamFormat.make_list (string_of_optional |> OpamFormat.make_string) in
       let s = {
         file_name     = OpamFilename.to_string filename;
         file_contents = [
-          Variable (s_bin     , mk_bin  t.bin);
+          Variable (s_bin     , mk      t.bin);
           Variable (s_lib     , mk      t.lib);
           Variable (s_toplevel, mk      t.toplevel);
+          Variable (s_stublibs, mk      t.stublibs);
           Variable (s_share   , mk      t.share);
           Variable (s_doc     , mk      t.doc);
           Variable (s_misc    , mk_misc t.misc);
@@ -1143,12 +1160,10 @@ module X = struct
       let s = Syntax.of_string filename str in
       Syntax.check s valid_fields;
       let src = OpamFormat.parse_string |> optional_of_string in
-      let mk field fn =
-        OpamFormat.assoc_list s.file_contents field (OpamFormat.parse_list fn) in
-      let bin =
+      let mk field =
         let dst = OpamFormat.parse_string |> OpamFilename.Base.of_string in
         let fn = OpamFormat.parse_single_option src dst in
-        mk s_bin fn in
+        OpamFormat.assoc_list s.file_contents field (OpamFormat.parse_list fn) in
       let misc =
         let absolute_filename s =
           if not (Filename.is_relative s) then
@@ -1157,13 +1172,15 @@ module X = struct
             OpamSystem.internal_error "%s is not an absolute filename." str in
         let dst = OpamFormat.parse_string |> absolute_filename in
         let fn = OpamFormat.parse_pair src dst in
-        mk s_misc fn in
-      let fn = OpamFormat.parse_string |> optional_of_string in
-      let lib      = mk s_lib      fn in
-      let toplevel = mk s_toplevel fn in
-      let share    = mk s_share    fn in
-      let doc      = mk s_doc      fn in
-      { lib; bin; misc; toplevel; share; doc }
+        OpamFormat.assoc_list s.file_contents s_misc (OpamFormat.parse_list fn) in
+      let bin      = mk s_bin      in
+      let lib      = mk s_lib      in
+      let toplevel = mk s_toplevel in
+      let stublibs = mk s_stublibs in
+      let share    = mk s_share    in
+      let doc      = mk s_doc      in
+      let man      = mk s_man      in
+      { lib; bin; misc; toplevel; stublibs; share; doc; man }
 
   end
 
@@ -1792,9 +1809,9 @@ module URL = struct
   include Make (URL)
 end
 
-module Urls_txt = struct
-  include Urls_txt
-  include Make(Urls_txt)
+module File_attributes = struct
+  include File_attributes
+  include Make(File_attributes)
 end
 
 module Filenames = struct
