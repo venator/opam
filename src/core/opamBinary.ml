@@ -78,7 +78,6 @@ let files_of_package path switch package =
   let name = OpamPackage.name package in
   let filename = OpamPath.Switch.install path switch name in
 
-
   let dot_install = OpamFile.Dot_install.safe_read filename in
   let aux acc (basename, rename_opt) =
     if basename.optional then acc
@@ -87,9 +86,9 @@ let files_of_package path switch package =
           (OpamFilename.Base.to_string basename.c) :: acc
       | Some r -> OpamFilename.of_string
           (OpamFilename.Base.to_string r) :: acc in
-  let aux_misc prefix acc (basename, filename) =
+  let aux_misc acc (basename, filename) =
     if basename.optional then acc
-    else prefix // (OpamFilename.to_string filename) :: acc in
+    else filename :: acc in
   let binaries =
     List.fold_left aux [] (OpamFile.Dot_install.bin dot_install) in
   let libs =
@@ -107,8 +106,7 @@ let files_of_package path switch package =
   let extlibs =
     extlib_of_ldd (ldd_of_files (filter_natives binaries)) in
   binaries @ libs @ toplevels @ stublibs @ shares @ docs @ mans
-  @ List.fold_left (aux_misc (OpamPath.Switch.root path switch)) []
-      (OpamFile.Dot_install.misc dot_install),
+  @ List.fold_left aux_misc [] (OpamFile.Dot_install.misc dot_install),
   (OpamPackage.Extlib.Set.elements extlibs)
 
 module Digest = struct
@@ -137,10 +135,15 @@ module Digest = struct
     | Not_found ->
       let env_digest =
         environment path switch repo_root installed_binaries nv in
-      let installed_files, extlibs = files_of_package path switch nv in
+      let installed_pathes, extlibs = files_of_package path switch nv in
+      (* Remove system specific path *)
+      let switch_path = OpamPath.Switch.root path switch in
+      let installed_files = List.map (fun p ->
+          OpamFilename.remove_prefix switch_path p)
+        installed_pathes in
       (* Checksums of installed files *)
-      let sorted_files = List.fast_sort String.compare
-        (List.map OpamFilename.to_string installed_files) in
+      let sorted_files = List.fast_sort String.compare installed_files in
+      List.iter print_endline sorted_files;
       let extlib_str = List.map OpamPackage.Extlib.to_string extlibs in
       (* let file_digests = List.map Digest.file files in *)
       (* of_list "" (dep_digests @ file_digests) *)
@@ -157,7 +160,7 @@ module Digest = struct
 
   (* Create a digest of an environment for a package *)
   and environment path switch repo_root installed_binaries nv =
-    (* let opam_f = OpamPath.opam path nv in *)
+    (* Dependency checksums *)
     let dep_digests =
       of_dependencies path switch repo_root installed_binaries nv in
     (* Get digest of package source archive *)
