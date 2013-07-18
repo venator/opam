@@ -114,11 +114,6 @@ let print_state t =
   log "BINARIES  : %s" (OpamPackage.Name.Map.to_string
       (fun c -> c) t.installed_binaries)
 
-let opam t nv =
-  try OpamPackage.Map.find nv t.opams
-  with Not_found ->
-    OpamPackage.unknown (OpamPackage.name nv) (Some (OpamPackage.version nv))
-
 let compiler t c =
   OpamFile.Comp.safe_read (OpamPath.compiler t.root c)
 
@@ -252,23 +247,13 @@ let compiler_state_index t =
 let is_pinned_aux pinned n =
   OpamPackage.Name.Map.mem n pinned
 
-let pinned_package_aux installed pinned packages n =
+let pinned_package_aux pinned n =
   match OpamPackage.Name.Map.find n pinned with
   | Version v -> OpamPackage.create n v
-  | _         ->
-    if mem_installed_package_by_name_aux installed n then
-      find_installed_package_by_name_aux installed n
-    else (
-      (* We arbitrary select only the latest version; the solver will
-         see this package only, which means that it will use the
-         correspondng build instructions, but the location will be the
-         one pointed out by the pinned path. *)
-      let versions = OpamPackage.versions_of_name packages n in
-      OpamPackage.create n (OpamPackage.Version.Set.max_elt versions)
-    )
+  | _         -> OpamPackage.pinned n
 
 let pinned_package t n =
-  pinned_package_aux t.installed t.pinned t.packages n
+  pinned_package_aux t.pinned n
 
 let is_pinned t n = is_pinned_aux t.pinned n
 
@@ -283,6 +268,16 @@ let pinned_path t name =
   else
     None
 
+let copy_pinned_opam t n =
+  let dst = OpamPath.Switch.pinned_opam t.root t.switch n in
+  let versions =
+    OpamPackage.versions_of_name (Lazy.force t.available_packages) n in
+  let version = OpamPackage.Version.Set.max_elt versions in
+  let nv = OpamPackage.create n version in
+  let src = OpamPath.opam t.root nv in
+  let opam = OpamFile.OPAM.read src in
+  OpamFile.OPAM.write dst opam
+
 (* is the current package locally pinned *)
 let is_locally_pinned t name =
   if OpamPackage.Name.Map.mem name t.pinned then
@@ -292,6 +287,17 @@ let is_locally_pinned t name =
   else
     false
 
+let opam t nv =
+  let name = OpamPackage.name nv in
+  if is_locally_pinned t name then
+    let opam_f = OpamPath.Switch.pinned_opam t.root t.switch name in
+    if not (OpamFilename.exists opam_f) then copy_pinned_opam t name;
+    OpamFile.OPAM.read (opam_f)
+  else
+    try OpamPackage.Map.find nv t.opams
+    with Not_found ->
+      OpamPackage.unknown (OpamPackage.name nv) (Some (OpamPackage.version nv))
+
 let jobs t =
   match !OpamGlobals.jobs with
   | None   -> OpamFile.Config.jobs t.config
@@ -299,7 +305,7 @@ let jobs t =
 
 (* List the packages which does fullfil the compiler constraints *)
 let available_packages
-    system opams installed package_index compiler_version pinned packages =
+    system opams installed package_index compiler_version packages =
   let filter nv =
     if OpamPackage.Map.mem nv opams then (
       let opam = OpamPackage.Map.find nv opams in
@@ -331,14 +337,8 @@ let available_packages
             let ($) = if b then (=) else (<>) in
             os $ OpamGlobals.os_string () in
           OpamFormula.eval atom f in
-      let consistent_pinned_version () =
-        let name = OpamPackage.name nv in
-        not (is_pinned_aux pinned name)
-        || pinned_package_aux installed pinned packages name = nv
-      in
       available ()
       && consistent_ocaml_version ()
-      && consistent_pinned_version ()
       && consistent_os ()
     ) else
       false in
@@ -539,20 +539,8 @@ let installed_versions t name =
   OpamSwitch.Map.fold (fun switch _ map ->
     let installed =
       OpamFile.Installed.safe_read (OpamPath.Switch.installed t.root switch) in
-    let pinned =
-      OpamFile.Pinned.safe_read (OpamPath.Switch.pinned t.root switch) in
     if mem_installed_package_by_name_aux installed name then
       let nv = find_installed_package_by_name_aux installed name in
-      let nv =
-        if is_locally_pinned { t with pinned } name then
-          OpamPackage.create name (OpamPackage.Version.of_string "(pinned)")
-        else if is_pinned { t with pinned } name then
-          let version = OpamPackage.Version.to_string (OpamPackage.version nv) in
-          let version = OpamPackage.Version.of_string (version ^ "(pinned)") in
-          OpamPackage.create name version
-        else
-          nv
-      in
       if OpamPackage.Map.mem nv map then
         let aliases = OpamPackage.Map.find nv map in
         let map = OpamPackage.Map.remove nv map in
@@ -567,17 +555,24 @@ let installed_versions t name =
    * correct opam version
    * only installed packages have something in $repo/tmp
    * only installed packages have something in $opam/pinned.cache *)
-let clean dir name =
+let clean_dir dir name =
   if OpamFilename.exists_dir dir then (
     OpamGlobals.error "%s exists although %s is not installed. Removing it."
       (OpamFilename.Dir.to_string dir) name;
     OpamFilename.rmdir dir
   )
 
+let clean_file file name =
+  if OpamFilename.exists file then (
+    OpamGlobals.error "%s exists although %s is not installed. Removing it."
+      (OpamFilename.to_string file) name;
+    OpamFilename.remove file
+  )
+
 let global_consistency_checks t =
   let clean_repo repo nv =
     let tmp_dir = OpamPath.Repository.tmp_dir repo nv in
-    clean tmp_dir (OpamPackage.to_string nv) in
+    clean_dir tmp_dir (OpamPackage.to_string nv) in
   let all_installed = all_installed t in
   OpamRepositoryName.Map.iter (fun _ repo ->
     let tmp_dir = OpamPath.Repository.tmp repo in
@@ -591,21 +586,40 @@ let global_consistency_checks t =
 
 let switch_consistency_checks t =
   let pin_cache = OpamPath.Switch.pinned_cache t.root t.switch in
-  let clean_pin name =
+  let clean_dir name =
     let name = OpamPackage.Name.to_string name in
     let pin_dir = pin_cache / name in
-    clean pin_dir name in
-  let available =
+    clean_dir pin_dir name in
+  let clean_file name =
+    let name = OpamPackage.Name.to_string name in
+    let pin_opam = pin_cache // (name ^ ".opam") in
+    clean_file pin_opam name in
+  let available_dirs =
     let dirs = OpamFilename.rec_dirs pin_cache in
-    let pkgs = List.rev_map (
+    let dirs = List.rev_map (
         OpamFilename.basename_dir
         |> OpamFilename.Base.to_string
         |> OpamPackage.Name.of_string
       ) dirs in
-    OpamPackage.Name.Set.of_list pkgs in
+    OpamPackage.Name.Set.of_list dirs in
+  let available_files =
+    let files = OpamFilename.rec_files pin_cache in
+    let files = List.filter (fun f -> OpamFilename.ends_with ".opam" f) files in
+    let files = List.rev_map (
+        OpamFilename.chop_extension
+        |> OpamFilename.basename
+        |> OpamFilename.Base.to_string
+        |> OpamPackage.Name.of_string
+      ) files in
+    OpamPackage.Name.Set.of_list files in
+
+  let pinned = OpamPackage.Name.Set.of_list (OpamPackage.Name.Map.keys t.pinned) in
   let installed = OpamPackage.names_of_packages t.installed in
-  let not_installed = OpamPackage.Name.Set.diff available installed in
-  OpamPackage.Name.Set.iter clean_pin not_installed
+
+  let not_installed = OpamPackage.Name.Set.diff available_dirs installed in
+  let not_pinned = OpamPackage.Name.Set.diff available_files pinned in
+  OpamPackage.Name.Set.iter clean_dir not_installed;
+  OpamPackage.Name.Set.iter clean_file not_pinned
 
 let loads = ref []
 let saves = ref []
@@ -847,7 +861,7 @@ let load_state ?(save_cache=true) call_site =
   let available_packages =
     lazy (
       available_packages
-        system opams installed package_index compiler_version pinned packages
+        system opams installed package_index compiler_version packages
     ) in
   let t = {
     partial; root; switch; compiler; compiler_version; repositories; opams; descrs;
@@ -897,13 +911,15 @@ let source t ?(interactive_only=false) f =
     Printf.sprintf "if tty -s >/dev/null 2>&1; then\n  %sfi\n" s
   else s
 
-exception Variable_not_defined
-
 (* Return the contents of a fully qualified variable *)
 let contents_of_variable t v =
   let name = OpamVariable.Full.package v in
   let var = OpamVariable.Full.variable v in
   let var_str = OpamVariable.to_string var in
+  let string str = Some (S str) in
+  let bool b = Some (B b) in
+  let int i = string (string_of_int i) in
+  let dirname dir = string (OpamFilename.Dir.to_string dir) in
   let read_var name =
     let c = dot_config t name in
     try match OpamVariable.Full.section v with
@@ -911,18 +927,18 @@ let contents_of_variable t v =
       | Some s -> OpamFile.Dot_config.Section.variable c s var
     with Not_found ->
       OpamGlobals.error "%s is not defined" (OpamVariable.Full.to_string v);
-      raise Variable_not_defined in
+      None in
   if name = OpamPackage.Name.default then (
-    try S (OpamMisc.getenv var_str)
+    try string (OpamMisc.getenv var_str)
     with Not_found ->
       if var_str = "ocaml-version" then
-        S (OpamCompiler.Version.to_string t.compiler_version)
+        string (OpamCompiler.Version.to_string t.compiler_version)
       else if var_str = "preinstalled" then
-        B (OpamFile.Comp.preinstalled (compiler t t.compiler))
+        bool (OpamFile.Comp.preinstalled (compiler t t.compiler))
       else if var_str = "switch" then
-        S (OpamSwitch.to_string t.switch)
+        string (OpamSwitch.to_string t.switch)
       else if var_str = "jobs" then
-        S (string_of_int (jobs t))
+        int (jobs t)
       else
         read_var name
   ) else (
@@ -934,49 +950,56 @@ let contents_of_variable t v =
         try
           let var_hook = Printf.sprintf "OPAM_%s_%s" name_str var_str in
           match OpamMisc.getenv var_hook with
-          | "true"  -> Some (B true)
-          | "false" -> Some (B false)
-          | s       -> Some (S s)
+          | "true"  | "1" -> bool true
+          | "false" | "0" -> bool false
+          | s             -> string s
         with Not_found ->
           let installed = mem_installed_package_by_name t name in
           let no_section = OpamVariable.Full.section v = None in
           if var = OpamVariable.enable && installed && no_section then
-            Some (S "enable")
+            string "enable"
           else if var = OpamVariable.enable && not installed && no_section then
-            Some (S "disable")
+            string "disable"
           else if var = OpamVariable.installed && no_section then
-            Some (B installed)
+            bool installed
           else if var = OpamVariable.installed || var = OpamVariable.enable then (
             OpamGlobals.error
               "Syntax error: invalid section argument in '%s'.\nUse '%s:%s' instead."
               (OpamVariable.Full.to_string v)
               name_str
               (OpamVariable.to_string var);
-            raise Variable_not_defined
-          ) else if not installed then
             None
-          else
-            Some (read_var name) in
+          ) else if installed then (
+            match OpamVariable.to_string var with
+            | "bin"     -> dirname (OpamPath.Switch.bin t.root t.switch)
+            | "lib"     -> dirname (OpamPath.Switch.lib t.root t.switch name)
+            | "man"     -> dirname (OpamPath.Switch.man_dir t.root t.switch)
+            | "doc"     -> dirname (OpamPath.Switch.doc t.root t.switch name)
+            | "share"   -> dirname (OpamPath.Switch.share t.root t.switch name)
+            | "pinned"  -> bool (OpamPackage.Name.Map.mem name t.pinned)
+            | "version" ->
+              let nv = find_installed_package_by_name t name in
+              string (OpamPackage.Version.to_string (OpamPackage.version nv))
+            | _         -> read_var name
+          ) else
+            None in
     match process_one name with
-    | Some r -> r
+    | Some r -> Some r
     | None   ->
       let name_str = OpamPackage.Name.to_string name in
-      let names = OpamMisc.split name_str '+' in
-      begin match names with
-        | [name] -> OpamPackage.unknown (OpamPackage.Name.of_string name) None
-        | _      -> ()
-      end;
+      let names =
+        try OpamMisc.split name_str '+'
+        with _ -> [name_str] in
       let names = List.rev_map OpamPackage.Name.of_string names in
       let results =
         List.rev_map (fun name ->
-          match process_one name with
-          | None   ->
-            OpamGlobals.error
-              "Package %s is not installed"
-              (OpamPackage.Name.to_string name);
-            raise Variable_not_defined
-          | Some r -> r
-        ) names in
+            match process_one name with
+            | None   ->
+              OpamGlobals.error_and_exit
+                "%s does not define the variable %s."
+                (OpamPackage.Name.to_string name) (OpamVariable.to_string var)
+            | Some r -> r
+          ) names in
       let rec compose x y = match x,y with
         | S "enable" , S "enable"  -> S "enable"
         | S "disable", S "enable"
@@ -993,24 +1016,31 @@ let contents_of_variable t v =
               (OpamVariable.string_of_variable_contents y) in
       match results with
       | [] | [_] -> assert false
-      | h::t     -> List.fold_left compose h t
+      | h::t     -> Some (List.fold_left compose h t)
   )
+
+let contents_of_variable_exn t var =
+  match contents_of_variable t var with
+  | None  ->
+    OpamGlobals.error_and_exit "%s is not a valid variable."
+      (OpamVariable.Full.to_string var)
+  | Some c -> c
 
 let substitute_ident t i =
   let v = OpamVariable.Full.of_string i in
-  contents_of_variable t v
+  contents_of_variable_exn t v
 
 (* Substitute the file contents *)
 let substitute_file t f =
   let f = OpamFilename.of_basename f in
   let src = OpamFilename.add_extension f "in" in
   let contents = OpamFile.Subst.read src in
-  let newcontents = OpamFile.Subst.replace contents (contents_of_variable t) in
+  let newcontents = OpamFile.Subst.replace contents (contents_of_variable_exn t) in
   OpamFile.Subst.write f newcontents
 
 (* Substitue the string contents *)
 let substitute_string t s =
-  OpamFile.Subst.replace_string s (contents_of_variable t)
+  OpamFile.Subst.replace_string s (contents_of_variable_exn t)
 
 exception Filter_type_error
 
@@ -1709,19 +1739,40 @@ let update_switch_config t switch =
   OpamFile.Config.write (OpamPath.config t.root) config;
   update_init_scripts { t with switch }  ~global:None
 
+let locally_pinned_package t n =
+  let option = OpamPackage.Name.Map.find n t.pinned in
+  let path = OpamFilename.raw_dir (string_of_pin_option option) in
+  match kind_of_pin_option option with
+  | None      -> OpamGlobals.error_and_exit
+                   "%s has a wrong pinning kind." (OpamPackage.Name.to_string n)
+  | Some kind ->
+    match repository_kind_of_pin_kind kind with
+    | None    -> OpamSystem.internal_error "locally pinned"
+    | Some kind -> (path, kind)
+
+let repository_of_locally_pinned_package t n =
+  let path, kind = locally_pinned_package t n in
+  let root = OpamPath.Switch.pinned_dir t.root t.switch n in
+  {
+    repo_name     = OpamRepositoryName.of_string (OpamPackage.Name.to_string n);
+    repo_root     = root;
+    repo_address  = path;
+    repo_kind     = kind;
+    repo_priority = 0;
+  }
+
 let update_pinned_package t n =
-  if OpamPackage.Name.Map.mem n t.pinned then
-    let pin = OpamPackage.Name.Map.find n t.pinned in
-    match kind_of_pin_option pin with
-    | (`git|`darcs|`local|`hg as k) ->
-      let path = OpamFilename.raw_dir (path_of_pin_option pin) in
-      let dst = OpamPath.Switch.pinned_dir t.root t.switch n in
-      let module B = (val OpamRepository.find_backend k: OpamRepository.BACKEND) in
-      B.pull_dir dst path
-    | _ ->
-      OpamGlobals.error_and_exit
-        "Cannot update the pinned package %s: wrong backend."
-        (OpamPackage.Name.to_string n)
+  if is_locally_pinned t n then
+    let path, kind = locally_pinned_package t n in
+    let dst = OpamPath.Switch.pinned_dir t.root t.switch n in
+    let module B = (val OpamRepository.find_backend kind: OpamRepository.BACKEND) in
+    let result = B.pull_dir n dst path in
+    if result <> Not_available then (
+      (* If $pinned_path/opam does not exist, the cache the current OPAM file. *)
+      let opam = OpamPath.Switch.pinned_opam t.root t.switch n in
+      if not (OpamFilename.exists opam) then copy_pinned_opam t n
+    );
+    result
   else
     OpamGlobals.error_and_exit "%s is not pinned."
       (OpamPackage.Name.to_string n)

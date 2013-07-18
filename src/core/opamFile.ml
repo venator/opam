@@ -526,12 +526,15 @@ module X = struct
 
     let to_string _ map =
       let lines = OpamPackage.Name.Map.fold (fun name pin lines ->
-          let l = [
-            OpamPackage.Name.to_string name;
-            string_of_pin_kind (kind_of_pin_option pin);
-            path_of_pin_option pin
-          ] in
-          l :: lines
+          match kind_of_pin_option pin with
+          | None      -> lines
+          | Some kind ->
+            let l = [
+              OpamPackage.Name.to_string name;
+              string_of_pin_kind kind;
+              string_of_pin_option pin
+            ] in
+            l :: lines
         ) map [] in
       Lines.to_string (List.rev lines)
 
@@ -907,6 +910,13 @@ module X = struct
       let make_file =
         OpamFormat.make_option (OpamFilename.Base.to_string |> OpamFormat.make_string)
           OpamFormat.make_filter in
+      let name_and_version = match OpamPackage.of_filename ~all:true filename with
+        | None  ->
+          let name n = OpamFormat.make_string (OpamPackage.Name.to_string n) in
+          let version v = OpamFormat.make_string (OpamPackage.Version.to_string v) in
+          [ Variable (s_name, name t.name);
+            Variable (s_version, version t.version) ]
+        | _     -> [] in
       let option c s f = match c with
         | None   -> []
         | Some v -> [ Variable (s, f v) ] in
@@ -924,7 +934,8 @@ module X = struct
         file_contents = [
           Variable (s_opam_version, OpamFormat.make_string OpamGlobals.opam_version);
           Variable (s_maintainer  , OpamFormat.make_string t.maintainer);
-        ] @ option  t.homepage      s_homepage      OpamFormat.make_string
+        ] @ name_and_version
+          @ option  t.homepage      s_homepage      OpamFormat.make_string
           @ list    t.authors       s_authors
               (String.concat ", " |> OpamFormat.make_string)
           @ option  t.license       s_license       OpamFormat.make_string
@@ -1289,7 +1300,9 @@ module X = struct
 
     let variables t = List.rev_map fst t.variables
 
-    let variable t s = List.assoc s t.variables
+    let variable t s =
+      try Some (List.assoc s t.variables)
+      with Not_found -> None
 
     module type SECTION = sig
       val available: t -> section list
@@ -1299,7 +1312,7 @@ module X = struct
       val asmlink  : t -> section -> string list
       val bytelink : t -> section -> string list
       val requires : t -> section -> section list
-      val variable : t -> section -> variable -> variable_contents
+      val variable : t -> section -> variable -> variable_contents option
       val variables: t -> section -> variable list
     end
 
@@ -1315,8 +1328,11 @@ module X = struct
       let bytelink t s = (find t s).bytelink
       let asmlink  t s = (find t s).asmlink
       let requires t s = (find t s).requires
-      let variable t n s = List.assoc s (find t n).lvariables
-      let variables t n = List.rev_map fst (find t n).lvariables
+      let variable t n s =
+        try Some (List.assoc s (find t n).lvariables)
+        with Not_found -> None
+      let variables t n =
+        List.rev_map fst (find t n).lvariables
     end
 
     let filter t n = List.filter (fun s -> s.kind = n) t.sections

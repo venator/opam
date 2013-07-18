@@ -318,6 +318,7 @@ type pin_option =
   | Darcs of address
   | Hg of address
   | Unpin
+  | Edit
 
 (** Pinned packages *)
 type pin = {
@@ -329,7 +330,10 @@ type pin = {
 val string_of_pin: pin -> string
 
 (** Pin kind *)
-type pin_kind = [`version|`git|`darcs|`hg|`local|`unpin]
+type pin_kind = [`version|`git|`darcs|`hg|`local]
+
+(** Convert a pin kind to a repository kind *)
+val repository_kind_of_pin_kind: pin_kind -> repository_kind option
 
 (** Pretty-printing of pin kinds. *)
 val pin_kind_of_string: string -> pin_kind
@@ -340,9 +344,11 @@ val string_of_pin_kind: pin_kind -> string
 (** Read pin options args *)
 val pin_option_of_string: ?kind:pin_kind -> string -> pin_option
 
-val path_of_pin_option: pin_option -> string
+(** Convert a pin option to a string *)
+val string_of_pin_option: pin_option -> string
 
-val kind_of_pin_option: pin_option -> pin_kind
+(** Get the pin kind from a pin option *)
+val kind_of_pin_option: pin_option -> pin_kind option
 
 (** Configuration requests *)
 type config = {
@@ -518,4 +524,15 @@ type package_repository_state = {
   pkg_files    : dirname option;
   pkg_metadata : string list;       (** Checksum of metadata *)
   pkg_contents : string list;       (** Checksum of contents *)
+}
+
+(** {2 JSON} *)
+type json = OpamJson.t
+
+(** {2 Updates} *)
+type 'a updates = {
+  created   : 'a;
+  updated   : 'a;
+  deleted   : 'a;
+  to_upgrade: 'a;
 }

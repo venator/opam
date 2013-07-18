@@ -209,7 +209,7 @@ module B = struct
     ) else
       Up_to_date repo.repo_root
 
-  let pull_dir dirname address =
+  let pull_dir _ dirname address =
     log "pull-dir";
     let repo = repo dirname address in
     pull_files ~all:true repo
@@ -219,9 +219,11 @@ module B = struct
     ignore (pull_files ~all:false repo)
 
   (* XXX: add a proxy *)
-  let pull_file dirname filename =
+  let pull_file name dirname filename =
     log "pull-file";
-    OpamGlobals.msg "Downloading %s\n" (OpamFilename.to_string filename);
+    OpamGlobals.msg "%-10s Downloading %s\n"
+      (OpamPackage.Name.to_string name)
+      (OpamFilename.to_string filename);
     try
       let local_file = OpamFilename.download ~overwrite:true filename dirname in
       Result local_file
@@ -230,7 +232,7 @@ module B = struct
 
   let pull_archive repo filename =
     log "pull-archive";
-    let state = make_state ~download_index:true repo in
+    let state = make_state ~download_index:false repo in
     if OpamFilename.Map.mem filename state.remote_local then (
       let local_file = OpamFilename.Map.find filename state.remote_local in
       if is_up_to_date state local_file then
@@ -244,6 +246,9 @@ module B = struct
       )
     ) else
       Not_available
+
+  let revision _ =
+    None
 
 end
 

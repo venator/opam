@@ -20,18 +20,34 @@ let log fmt = OpamGlobals.log "PACKAGE" fmt
 
 module Version = struct
 
-  type t = string
+  type version =
+    | Version of string
+    | Pinned
 
-  let to_string x = x
+  type t = version
 
-  let of_string x = x
+  let to_string = function
+    | Version x -> x
+    | Pinned    -> "(pinned)"
 
-  let compare = Debian.Version.compare
+  let of_string x = Version x
+
+  let pinned = Pinned
+
+  let compare x y = match (x,y) with
+    | Version v1, Version v2 -> Debian.Version.compare v1 v2
+    | Pinned    , Pinned     -> 0
+    | Pinned    , _          -> 1
+    | _         , Pinned     -> -1
+
+  let to_json x =
+    `String (to_string x)
 
   module O = struct
-    type t = string
+    type t = version
     let to_string = to_string
     let compare = compare
+    let to_json = to_json
   end
 
   module Set = OpamMisc.Set.Make(O)
@@ -55,10 +71,13 @@ module Name = struct
     | 0 -> compare n1 n2
     | i -> i
 
+  let to_json x = `String x
+
   module O = struct
     type t = string
     let to_string = to_string
     let compare = compare
+    let to_json = to_json
   end
 
   module Set = OpamMisc.Set.Make(O)
@@ -95,6 +114,8 @@ type t = {
 }
 
 let create name version = { name; version }
+
+let pinned name = { name; version = Version.pinned }
 
 let name t = t.name
 
@@ -151,11 +172,17 @@ let hash nv = Hashtbl.hash nv
 let equal nv1 nv2 =
   compare nv1 nv2 = 0
 
+let to_json nv =
+  `O [ ("name", Name.to_json (name nv));
+       ("version", Version.to_json (version nv));
+     ]
+
 module O = struct
   type tmp = t
   type t = tmp
   let compare = compare
   let to_string = to_string
+  let to_json = to_json
 end
 
 module Set = OpamMisc.Set.Make (O)

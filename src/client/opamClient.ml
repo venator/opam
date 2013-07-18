@@ -93,6 +93,7 @@ let names_of_regexp t ~filter ~exact_name ~case_sensitive regexps =
         else match installed_version with
           | Some v -> v
           | None   ->
+
             let nv =
               OpamPackage.Set.max_elt (OpamPackage.Set.filter has_name packages) in
             OpamPackage.version nv in
@@ -139,7 +140,7 @@ module API = struct
 
   let list ~print_short ~filter ~exact_name ~case_sensitive regexp =
     let t = OpamState.load_state "list" in
-    let names =names_of_regexp t ~filter ~exact_name ~case_sensitive regexp in
+    let names = names_of_regexp t ~filter ~exact_name ~case_sensitive regexp in
     if not print_short && OpamPackage.Name.Map.cardinal names > 0 then (
       let kind = match filter with
         | `roots
@@ -147,6 +148,13 @@ module API = struct
         | _          -> "Available" in
       OpamGlobals.msg "%s packages for %s:\n" kind (OpamSwitch.to_string t.switch);
     );
+    let names = OpamPackage.Name.Map.mapi (fun name stats ->
+        if OpamState.mem_installed_package_by_name t name
+        && OpamState.is_locally_pinned t name then
+          { stats with installed_version = Some (OpamPackage.Version.pinned) }
+        else
+          stats
+      ) names in
     let max_n, max_v =
       OpamPackage.Name.Map.fold (fun name { installed_version } (max_n, max_v) ->
         let max_n = max max_n (String.length (OpamPackage.Name.to_string name)) in
@@ -185,7 +193,12 @@ module API = struct
 
       (* Compute the installed versions, for each switch *)
       let installed = OpamState.installed_versions t name in
-
+      let installed = OpamPackage.Map.fold (fun nv alias map ->
+          let nv =
+            if OpamState.is_locally_pinned t name then OpamPackage.pinned name
+            else nv in
+          OpamPackage.Map.add nv alias map
+        ) installed OpamPackage.Map.empty in
       let installed_str =
         let one (nv, aliases) =
           Printf.sprintf "%s [%s]"
@@ -203,12 +216,22 @@ module API = struct
 
       let repository =
         if OpamState.is_locally_pinned t name then
-          ["repository", "(pinned)"]
+          []
         else if OpamRepositoryName.Map.cardinal t.repositories <= 1 then
           []
         else match repo_name with
           | None   -> []
           | Some r -> [ "repository", OpamRepositoryName.to_string r ] in
+
+      let revision =
+        if OpamState.is_locally_pinned t name
+        && OpamState.mem_installed_package_by_name t name then
+          let repo = OpamState.repository_of_locally_pinned_package t name in
+          match OpamRepository.revision repo with
+          | None   -> []
+          | Some v -> [ "revision", OpamPackage.Version.to_string v ]
+        else
+          [] in
 
       let url = match repo_name with
         | None           -> []
@@ -311,9 +334,14 @@ module API = struct
           | _  -> Printf.sprintf "\n\n%s" long in
         ["description", short ^ long] in
 
+      let version =
+        if OpamState.is_locally_pinned t name then OpamPackage.Version.pinned
+        else current_version in
+
       let all_fields =
         [ "package", OpamPackage.Name.to_string name ]
-        @ [ "version", OpamPackage.Version.to_string current_version ]
+        @ [ "version", OpamPackage.Version.to_string version ]
+        @ revision
         @ repository
         @ url
         @ homepage
@@ -446,17 +474,58 @@ module API = struct
     let old_package_index = OpamState.package_state_index t in
 
     if repositories_need_update then (
+      let repos = OpamRepositoryName.Map.values repositories in
+
       (* update is IO-bounded, so it's OK to spawn a lot of jobs *)
-      OpamRepository.parallel_iter (OpamRepositoryName.Map.cardinal repositories)
+      OpamRepository.parallel_iter
+        (OpamRepositoryName.Map.cardinal repositories)
         OpamRepository.update
-        (OpamRepositoryName.Map.values repositories);
+        repos;
       let t = OpamRepositoryCommand.update_index t in
-      OpamRepositoryCommand.relink_compilers t ~verbose:true old_compiler_index;
-      OpamRepositoryCommand.relink_packages t ~verbose:true old_package_index;
+      let compiler_updates =
+        OpamRepositoryCommand.relink_compilers t ~verbose:true old_compiler_index in
+      let package_updates =
+        OpamRepositoryCommand.relink_packages t ~verbose:true old_package_index in
+
+      (* Update the dev packages *)
+      let dev_updates =
+        let map repo =
+          let packages = OpamRepository.get_cache_updates repo in
+          OpamPackage.Set.filter (fun nv ->
+              if OpamPackage.Map.mem nv t.package_index
+              && OpamPackage.Map.find nv t.package_index = repo.repo_name then
+                true
+              else (
+                let tmp = OpamPath.Repository.tmp_dir repo nv in
+                OpamFilename.rmdir tmp;
+                false
+              )
+            ) packages in
+        OpamRepository.map_reduce (OpamState.jobs t)
+          map
+          OpamPackage.Set.union
+          OpamPackage.Set.empty
+          repos in
+      OpamState.add_to_reinstall t ~all:true dev_updates;
+      let json to_json update =
+        `O [ ("created"   , to_json update.created);
+             ("updated"   , to_json update.updated);
+             ("deleted"   , to_json update.deleted);
+             ("to_upgrade", to_json update.to_upgrade); ] in
+      let updates = `O [
+          "package-updates"    , (json OpamPackage.Set.to_json package_updates);
+          "package-dev-updates", (OpamPackage.Set.to_json dev_updates);
+          "compiler-updates"   , (json OpamCompiler.Set.to_json compiler_updates);
+        ] in
+      OpamJson.add updates;
     );
 
-    if pinned_packages_need_update then
-      OpamRepositoryCommand.update_pinned_packages ~verbose:true t pinned_packages;
+    if pinned_packages_need_update then (
+      let updates =
+        OpamRepositoryCommand.update_pinned_packages ~verbose:true t pinned_packages in
+      let json = `O [ "pinned", OpamPackage.Set.to_json updates ] in
+      OpamJson.add json
+    );
 
     OpamState.rebuild_state_cache ();
 
@@ -570,8 +639,12 @@ module API = struct
         log "updating repository state";
         let t = OpamState.load_repository_state "init-1" in
         let t = OpamRepositoryCommand.update_index t in
-	OpamRepositoryCommand.relink_compilers t ~verbose:false OpamCompiler.Map.empty;
-	OpamRepositoryCommand.relink_packages t ~verbose:false OpamPackage.Map.empty;
+        let _ =
+          OpamRepositoryCommand.relink_compilers t ~verbose:false OpamCompiler.Map.empty
+        in
+        let _ =
+	  OpamRepositoryCommand.relink_packages t ~verbose:false OpamPackage.Map.empty
+        in
 
         (* Load the partial state, and install the new compiler if needed *)
 	log "updating package state";

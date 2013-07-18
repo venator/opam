@@ -140,7 +140,11 @@ val update_setup: state -> user_config option -> global_config option -> unit
 (** {2 Substitutions} *)
 
 (** Compute the value of a variable *)
-val contents_of_variable: state -> full_variable -> variable_contents
+val contents_of_variable: state -> full_variable -> variable_contents option
+
+(** Compute the value of a variable. Raise [Exit] if the variable is
+    not valid. *)
+val contents_of_variable_exn: state -> full_variable -> variable_contents
 
 (** Substitute a string *)
 val substitute_string: state -> string -> string
@@ -271,6 +275,15 @@ val is_pinned: state -> name -> bool
 
 (** Is the package locally pinned ? (ie. not a version pinning) *)
 val is_locally_pinned: state -> name -> bool
+
+(** Get the path and kind associated to a locally pinned package. *)
+val locally_pinned_package: state -> name -> dirname * repository_kind
+
+(** Return the repository associated to a locally pinned package. *)
+val repository_of_locally_pinned_package: state -> name -> repository
+
+(** Cache the OPAM file of pinned package *)
+val copy_pinned_opam: state -> name -> unit
 
 (** Get the corresponding pinned package. If the package is pinned to
     a path (locally or via git/darcs), it returns the latest package as we

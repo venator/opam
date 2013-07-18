@@ -18,6 +18,8 @@
 
 open OpamTypes
 
+include OpamMisc.ABSTRACT with type t := repository
+
 exception Unknown_backend
 
 (** Pretty-print *)
@@ -38,14 +40,13 @@ val default_address: address
 (** Constructor *)
 val repository_address: string -> address
 
-(** [get_upstream_update repo packages] checks for upstream changes
-    for packages in the [packages] map. Return the packages whose
-    contents have changed upstream (ie. either the 'url' file has
-    changed, the archive file has changed, or the contents of the
-    'files/' sub-directory, or, git and rsync-ed packages, upstream
-    contents have changed. *)
-val get_upstream_updates:
-  repository -> package_repository_state package_map -> package_set
+(** [get_cache_update repo] checks for upstream changes for
+    packages in the cache. Return the packages whose contents have
+    changed upstream (ie. either the 'url' file has changed, the
+    archive file has changed, or the contents of the 'files/'
+    sub-directory, or, git and rsync-ed packages, upstream contents
+    have changed. *)
+val get_cache_updates: repository -> package_set
 
 (** [cleanup repo _packages] cleans the tempory files in the given
     repository. [packages] contains all the 'active' package states,
@@ -101,13 +102,13 @@ val download: repository -> package -> unit
 (** Backend signature *)
 module type BACKEND = sig
 
-  (** [pull_file local_dir remote_file] pull the contents of
+  (** [pull_file name local_dir remote_file] pull the contents of
       [remote_file] into [local_dir]. *)
-  val pull_file: dirname -> filename -> filename download
+  val pull_file: name -> dirname -> filename -> filename download
 
-  (** [pull_dir local_dir remote_dir] pull the contents of
+  (** [pull_dir name local_dir remote_dir] pull the contents of
       [remote_dir] into [local_dir]. *)
-  val pull_dir: dirname -> dirname -> dirname download
+  val pull_dir: name -> dirname -> dirname -> dirname download
 
   (** Pull a repository. Usually very similar to [pull_dir] but some
       backends have special needs. *)
@@ -117,7 +118,14 @@ module type BACKEND = sig
       [pull_file] but some backends have special needs. *)
   val pull_archive: repository -> filename -> filename download
 
+  (** Return the (optional) revision of a given repository. Useful
+      mainly when using CVS backends. *)
+  val revision: repository -> version option
+
 end
+
+(** Get the optional revision associated to a backend. *)
+val revision: repository -> version option
 
 (** Register a repository backend *)
 val register_backend: repository_kind -> (module BACKEND) -> unit

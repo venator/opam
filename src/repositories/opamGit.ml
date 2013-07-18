@@ -44,16 +44,20 @@ module Git = struct
     ]
 
   let fetch repo =
-    let address = address repo in
-    OpamGlobals.msg "%-10s Fetching %s%s\n"
-      (OpamRepositoryName.to_string repo.repo_name)
-      (OpamFilename.prettify_dir address.address)
-      (match address.commit with
-      | None   -> ""
-      | Some c -> Printf.sprintf " [%s]" c);
     OpamFilename.in_dir repo.repo_root (fun () ->
-      OpamSystem.command [ "git" ; "fetch" ; "origin" ]
-    )
+        OpamSystem.command [ "git" ; "fetch" ; "origin" ]
+      )
+
+  let revision repo =
+    OpamFilename.in_dir repo.repo_root (fun () ->
+        match OpamSystem.read_command_output [ "git" ; "rev-parse" ; "HEAD" ] with
+        | []      -> "<none>"
+        | full::_ ->
+          if String.length full > 8 then
+            String.sub full 0 8
+          else
+            full
+      )
 
   let merge repo =
     let address = address repo in

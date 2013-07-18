@@ -51,6 +51,11 @@ let local dirname = {
   repo_priority = 0;
 }
 
+let to_json r =
+  `O  [ ("name", OpamRepositoryName.to_json r.repo_name);
+        ("kind", `String (string_of_repository_kind r.repo_kind));
+      ]
+
 let repository_address address =
   if Sys.file_exists address
   then OpamFilename.Dir.of_string address
@@ -61,17 +66,22 @@ module O = struct
   type t = tmp
   let compare = compare
   let to_string = to_string
+  let to_json = to_json
 end
+
+let of_string _ =
+  failwith "TOTO"
 
 module Set = OpamMisc.Set.Make(O)
 
 module Map = OpamMisc.Map.Make(O)
 
 module type BACKEND = sig
-  val pull_file: dirname -> filename -> filename download
-  val pull_dir: dirname -> dirname -> dirname download
+  val pull_file: name -> dirname -> filename -> filename download
+  val pull_dir: name -> dirname -> dirname -> dirname download
   val pull_repo: repository -> unit
   val pull_archive: repository -> filename -> filename download
+  val revision: repository -> version option
 end
 
 exception Unknown_backend
@@ -127,19 +137,24 @@ let read_tmp dir =
   OpamPackage.Set.of_list
     (OpamMisc.filter_map OpamPackage.of_dirname (OpamFilename.Dir.Set.elements dirs))
 
-let pull_file kind local_dirname remote_filename =
+let pull_file kind name local_dirname remote_filename =
   let module B = (val find_backend_by_kind kind: BACKEND) in
-  B.pull_file local_dirname remote_filename
+  B.pull_file name local_dirname remote_filename
 
-let pull_dir kind local_dirname remote_dirname =
+let pull_dir kind name local_dirname remote_dirname =
   let module B = (val find_backend_by_kind kind: BACKEND) in
-  B.pull_dir local_dirname remote_dirname
+  B.pull_dir name local_dirname remote_dirname
 
-let pull_file_and_check_digest kind dirname filename checksum =
+let revision repo =
+  let kind = repo.repo_kind in
+  let module B = (val find_backend_by_kind kind: BACKEND) in
+  B.revision repo
+
+let pull_file_and_check_digest kind name dirname filename checksum =
   if OpamFilename.exists filename
   && OpamFilename.digest filename = checksum then
     Up_to_date filename
-  else match pull_file kind dirname filename with
+  else match pull_file kind name dirname filename with
     | Not_available -> Not_available
     | Up_to_date f  -> Up_to_date f
     | Result f      ->
@@ -161,7 +176,8 @@ let pull_file_and_check_digest kind dirname filename checksum =
           actual
 
 let pull_file_and_fix_digest ~url_file nv kind dirname filename checksum =
-  match pull_file kind dirname filename with
+  let name = OpamPackage.name nv in
+  match pull_file kind name dirname filename with
   | Not_available -> Not_available
   | Up_to_date f  -> Up_to_date f
   | Result f      ->
@@ -229,14 +245,15 @@ let map fn = function
 let dir = map (fun d -> D d)
 let file = map (fun f -> F f)
 
-let pull kind download address =
-  match pull_file kind download (OpamFilename.raw address) with
-  | Not_available -> dir (pull_dir kind download (OpamFilename.raw_dir address))
+let pull kind name download address =
+  match pull_file kind name download (OpamFilename.raw address) with
+  | Not_available -> dir (pull_dir kind name download (OpamFilename.raw_dir address))
   | x             -> file x
 
 let make_archive ?(gener_digest=false) repo nv =
   let prefix = find_prefix (read_prefix repo) nv in
   let url_file = OpamPath.Repository.url repo prefix nv in
+  let name = OpamPackage.name nv in
 
   let download_dir = OpamPath.Repository.tmp_dir repo nv in
   OpamFilename.mkdir download_dir;
@@ -256,13 +273,13 @@ let make_archive ?(gener_digest=false) repo nv =
       let local_filename =
         OpamFilename.in_dir download_dir (fun () ->
           match checksum with
-          | None   -> pull kind download_dir address
+          | None   -> pull kind name download_dir address
           | Some c ->
             let filename = OpamFilename.raw address in
             if gener_digest then
               file (pull_file_and_fix_digest ~url_file nv kind download_dir filename c)
             else
-              file (pull_file_and_check_digest kind download_dir filename c)
+              file (pull_file_and_check_digest kind name download_dir filename c)
         ) in
 
       match local_filename with
@@ -451,43 +468,36 @@ let update repo =
   B.pull_repo repo;
   check_version repo
 
-let get_upstream_updates repo packages =
-  log "get-upstream-updates %s %s" (to_string repo)
-    (OpamMisc.string_of_list OpamPackage.to_string (OpamPackage.Map.keys packages));
+let get_cache_updates repo =
+  log "get-cache-updates %s" (to_string repo);
 
-  clean repo packages;
   let prefix = read_prefix repo in
 
   (* For each package in the cache, look at what changed upstream *)
   let cached_packages = read_tmp (OpamPath.Repository.tmp repo) in
   log "cached_packages: %s" (OpamPackage.Set.to_string cached_packages);
-  let cached_packages = OpamPackage.Set.filter (fun nv ->
-    let prefix = find_prefix prefix nv in
-    let state = package_state repo prefix nv in
-    match state.pkg_url with
-    | None       -> true
-    | Some url_f ->
-      let url = OpamFile.URL.read url_f in
-      let kind = match OpamFile.URL.kind url with
-        | None   -> kind_of_url (OpamFile.URL.url url)
-        | Some k -> k in
-      let filename = OpamFile.URL.url url in
-      log "updating %s:%s" filename (string_of_repository_kind kind);
-      let dirname = OpamPath.Repository.tmp_dir repo nv in
-      match pull kind dirname filename with
-      | Not_available -> OpamGlobals.error_and_exit "%s is not available." filename
-      | Up_to_date _  -> false
-      | Result _      -> true
-  ) cached_packages in
-
-  let upstream_changes = OpamPackage.Map.fold (fun nv old_state set ->
-    let prefix = find_prefix prefix nv in
-    let new_state = package_state repo prefix nv in
-    if old_state.pkg_contents = new_state.pkg_contents then set
-    else OpamPackage.Set.add nv set
-  ) packages OpamPackage.Set.empty in
-
-  OpamPackage.Set.union cached_packages upstream_changes
+  OpamPackage.Set.filter (fun nv ->
+      let name = OpamPackage.name nv in
+      let prefix = find_prefix prefix nv in
+      let state = package_state repo prefix nv in
+      match state.pkg_url with
+      | None       -> false
+      | Some url_f ->
+        let url = OpamFile.URL.read url_f in
+        let kind = match OpamFile.URL.kind url with
+          | None   -> kind_of_url (OpamFile.URL.url url)
+          | Some k -> k in
+        let filename = OpamFile.URL.url url in
+        log "updating %s:%s" filename (string_of_repository_kind kind);
+        let dirname = OpamPath.Repository.tmp_dir repo nv in
+        match kind with
+        | `http -> false
+        | _    ->
+          match pull kind name dirname filename with
+          | Not_available -> OpamGlobals.error_and_exit "%s is not available." filename
+          | Up_to_date _  -> false
+          | Result _      -> true
+    ) cached_packages
 
 let files r nv =
   let prefix = find_prefix (read_prefix r) nv in
