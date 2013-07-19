@@ -96,10 +96,13 @@ module Extlib = struct
 
   let compare = compare
 
+  let to_json x = `String x
+
   module O = struct
     type t = string
     let to_string = to_string
     let compare = compare
+    let to_json = to_json
   end
 
   module Set = OpamMisc.Set.Make(O)

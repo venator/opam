@@ -69,7 +69,7 @@ type build_options = {
 let create_build_options
     keep_build_dir make no_checksums build_test
     build_doc dryrun external_tags cudf_file fake
-    jobs json = {
+    jobs json binary = {
   keep_build_dir; make; no_checksums;
   build_test; build_doc; dryrun; external_tags;
   cudf_file; fake; jobs; json; binary
