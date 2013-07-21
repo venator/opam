@@ -306,8 +306,9 @@ let parallel_apply t action solution =
       | Some pkg_state ->
         let bin_checksum = OpamBinary.Digest.binary t.root t.switch
             pkg_state.pkg_repo state.s_installed_binaries nv in
+        let bin_checksum_str = OpamBinary.Digest.to_string bin_checksum in
         state.s_installed_binaries <- OpamPackage.Name.Map.add
-            (OpamPackage.name nv) bin_checksum state.s_installed_binaries);
+            (OpamPackage.name nv) bin_checksum_str state.s_installed_binaries);
     update_state () in
 
   let remove_from_install deleted =

@@ -73,6 +73,12 @@ type version = OpamPackage.Version.t
 (** Set of package versions *)
 type version_set = OpamPackage.Version.Set.t
 
+(** Package external libraries *)
+type extlib = OpamPackage.Extlib.t
+
+(** Set of package external libraries *)
+type extlib_set = OpamPackage.Extlib.Set.t
+
 (** {2 Compilers} *)
 
 (** Compiler names *)

@@ -563,22 +563,6 @@ let compare_filenames f1 f2 =
 let map_stats files =
   List.map (fun f -> f, Unix.lstat (OpamFilename.to_string f)) files
 
-(* Debug function used to print the list of installed files *)
-(*
-let print_diff (removed_files, installed_files, modified_files) =
-    let print_filenames header files =
-      Printf.printf "\n===== %s =====\n" header;
-      if List.length files > 0 then
-        List.iter (fun f -> print_endline (OpamFilename.to_string f)) files
-      else
-        print_endline "None"
-    in
-
-    print_filenames "Removed files" removed_files;
-    print_filenames "Installed files" installed_files;
-    print_filenames "Modified files" modified_files
-*)
-
 (* Create a log file associated to a binary package.
    It contains the environment parameters as returned by 'ocamlc -config' *)
 let log_package filename =
@@ -772,7 +756,8 @@ let build_and_install_package_aux t ~metadata nv =
         let checksum =
           OpamBinary.Digest.environment t.root t.switch pkg_state.pkg_repo
               t.installed_binaries nv in
-        checksum, find_binary_opt t nv checksum
+        let checksum_str = OpamBinary.Digest.to_string checksum in
+        checksum_str, find_binary_opt t nv checksum_str
       | false, _
       | _, None -> "", None
     in
@@ -865,19 +850,20 @@ let build_and_install_package_aux t ~metadata nv =
             let bin_checksum =
               OpamBinary.Digest.binary t.root t.switch pkg_state.pkg_repo
                   t.installed_binaries nv in
-            archive_package t nv env_checksum bin_checksum installed_files;
+            let bin_checksum_str = OpamBinary.Digest.to_string bin_checksum in
+            archive_package t nv env_checksum bin_checksum_str installed_files;
 
             (* Call ldd on binaries and write the extlib file *)
             (* TODO: check if binaries exists outside of $OPAM/$OVERSION/bin *)
             let dot_install_files = sort_files_in_dirs ~dirs installed_files in
             let binaries = binaries_of_installed_files dot_install_files in
-            let natives = OpamBinary.filter_natives binaries in
-            let ldd = OpamBinary.ldd_of_files natives in
+            let natives = OpamBinary.Ldd.filter_natives binaries in
+            let ldd = OpamBinary.Ldd.of_files natives in
             OpamFile.Package_extlib.write
-                (OpamPath.binary_extlib t.root nv env_checksum bin_checksum)
-                (OpamBinary.extlib_of_ldd ldd);
+                (OpamPath.binary_extlib t.root nv env_checksum bin_checksum_str)
+                (OpamBinary.Ldd.to_extlib ldd);
 
-            Some (bin_checksum, dot_install_files)
+            Some (bin_checksum_str, dot_install_files)
           end
       )
       (* The package hasn't been installed from a pre-compiled archive,

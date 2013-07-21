@@ -51,26 +51,32 @@ let local_deps path switch nv =
   let installed = installed_packages path switch in
   installed_deps (OpamFormula.ands [depends; depopts]) installed
 
-(* Filter out bytecode binaries *)
-let filter_natives bin_files =
-  List.filter (fun bin ->
-      let bin_str = OpamFilename.to_string bin in
-      if OpamMisc.ends_with ~suffix:".byte" bin_str then false else true)
-    bin_files
+module Ldd = struct
 
-(* Call ldd on binary files *)
-let ldd_of_files natives =
-  List.map (fun native ->
-      let native_str = OpamFilename.to_string native in
-      let ldd = OpamSystem.ldd native_str in
-      let libs = List.map OpamPackage.Extlib.of_string ldd in
-      (native_str, OpamPackage.Extlib.Set.of_list libs))
-    natives
+  type t = (string * extlib_set) list
 
-(* Returns a set of external dependencies given a ldd output *)
-let extlib_of_ldd ldd =
-  List.fold_left (fun acc (_, s) -> OpamPackage.Extlib.Set.union acc s)
-      OpamPackage.Extlib.Set.empty ldd
+  (* Filter out bytecode binaries *)
+  let filter_natives bin_files =
+    List.filter (fun bin ->
+        let bin_str = OpamFilename.to_string bin in
+        if OpamMisc.ends_with ~suffix:".byte" bin_str then false else true)
+      bin_files
+
+  (* Call ldd on binary files *)
+  let of_files natives =
+    List.map (fun native ->
+        let native_str = OpamFilename.to_string native in
+        let ldd = OpamSystem.ldd native_str in
+        let libs = List.map OpamPackage.Extlib.of_string ldd in
+        (native_str, OpamPackage.Extlib.Set.of_list libs))
+      natives
+
+  (* Returns a set of external dependencies given a ldd output *)
+  let to_extlib ldd =
+    List.fold_left (fun acc (_, s) -> OpamPackage.Extlib.Set.union acc s)
+        OpamPackage.Extlib.Set.empty ldd
+
+end
 
 (* Retrieve the files installed by a package *)
 let files_of_package path switch package =
@@ -104,15 +110,19 @@ let files_of_package path switch package =
   let mans =
     List.fold_left aux [] (OpamFile.Dot_install.man dot_install) in
   let extlibs =
-    extlib_of_ldd (ldd_of_files (filter_natives binaries)) in
+    Ldd.to_extlib (Ldd.of_files (Ldd.filter_natives binaries)) in
   binaries @ libs @ toplevels @ stublibs @ shares @ docs @ mans
   @ List.fold_left aux_misc [] (OpamFile.Dot_install.misc dot_install),
   (OpamPackage.Extlib.Set.elements extlibs)
 
 module Digest = struct
 
+  type t = string
+
   let of_string s =
     Digest.to_hex (Digest.string s)
+
+  let to_string d = d
 
   (* Return the hex digest of the a concatenated list of strings *)
   let of_list sep strings =

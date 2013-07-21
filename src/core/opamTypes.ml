@@ -39,6 +39,10 @@ type generic_file =
   | D of dirname
   | F of filename
 
+type extlib = OpamPackage.Extlib.t
+
+type extlib_set = OpamPackage.Extlib.Set.t
+
 type version = OpamPackage.Version.t
 
 type version_set = OpamPackage.Version.Set.t
